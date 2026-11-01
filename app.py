@@ -54,7 +54,7 @@ if secret_key:
     except Exception as e:
         st.warning(f'기상청 예보 연결 실패: {e}')
 else:
-    st.info('관리자가 Streamlit 앱 Secrets에 KMA_FORECAST_KEY를 설정하면, 방문자에게 기상청 단기예보가 자동 표시됩니다. 방문자는 인증키를 입력할 필요가 없습니다.')
+    st.info('관리자가 Streamlit 앱 Secrets에 KMA_FORECAST_KEY(API허브 인증키)를 설정하면, 방문자에게 기상청 단기예보가 자동 표시됩니다. 방문자는 인증키를 입력할 필요가 없습니다.')
 st.markdown('[기상청 날씨누리에서 공식 예보·특보 확인](https://www.weather.go.kr/)')
 st.divider()
 

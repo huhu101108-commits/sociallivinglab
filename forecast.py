@@ -5,7 +5,7 @@ import requests
 import pandas as pd
 
 KST=ZoneInfo('Asia/Seoul')
-URL='https://apis.data.go.kr/1360000/VilageFcstInfoService_2.0/getVilageFcst'
+URL='https://apihub.kma.go.kr/api/typ02/openApi/VilageFcstInfoService_2.0/getVilageFcst'
 # KMA Lambert grid transform from latitude/longitude.
 def grid(lat=35.879,lon=128.602):
     import math
@@ -35,14 +35,25 @@ def latest_base(now=None):
 def fetch_forecast(key):
     if not key: raise ValueError('기상청 단기예보 API 인증키가 없습니다.')
     base=latest_base();nx,ny=grid()
-    params={'serviceKey':key,'pageNo':1,'numOfRows':1000,'dataType':'JSON',
+    params={'authKey':key,'pageNo':1,'numOfRows':1000,'dataType':'JSON',
             'base_date':base.strftime('%Y%m%d'),'base_time':base.strftime('%H%M'),'nx':nx,'ny':ny}
-    resp=requests.get(URL,params=params,timeout=20);resp.raise_for_status()
+    try:
+        resp=requests.get(URL,params=params,timeout=20)
+        resp.raise_for_status()
+    except requests.exceptions.HTTPError as exc:
+        status=exc.response.status_code if exc.response is not None else '알 수 없음'
+        if status in (401,403):
+            raise ValueError('API허브 동네예보 단기예보조회(getVilageFcst) 사용 권한이 없습니다. API허브에서 이 항목을 별도로 활용 신청하고 승인 상태를 확인하세요.') from None
+        raise ValueError(f'기상청 API 서버 HTTP {status} 오류입니다. 잠시 후 다시 시도하세요.') from None
+    except requests.exceptions.RequestException:
+        raise ValueError('기상청 API 서버 연결에 실패했습니다. 네트워크 상태를 확인하세요.') from None
     try: payload=resp.json()
     except ValueError: raise ValueError('API가 JSON 대신 오류 메시지를 반환했습니다. 인증키와 승인 상태를 확인하세요.')
     header=payload.get('response',{}).get('header',{})
     if str(header.get('resultCode'))!='00':raise ValueError(str(header.get('resultMsg','API 오류')))
-    body=payload['response']['body']; items=body.get('items',{}).get('item',[])
+    body=payload.get('response',{}).get('body',{})
+    items=body.get('items',{}).get('item',[])
+    if isinstance(items,dict): items=[items]
     if not items:raise ValueError('조회된 예보 항목이 없습니다.')
     df=pd.DataFrame(items)
     df['date']=pd.to_datetime(df['fcstDate']+df['fcstTime'],format='%Y%m%d%H%M')
