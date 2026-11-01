@@ -145,18 +145,37 @@ st.markdown('**건강 수칙:** 물 자주 마시기, 그늘이나 시원한 장
 st.header('4. 무더위쉼터 지도 · 내 위치')
 st.caption('쉼터 정보는 행정안전부/지자체 공식 자료만 사용합니다. 지도에 보이는 위치와 실제 운영 여부는 다를 수 있으니 방문 전에 확인하세요.')
 st.markdown('[전국무더위쉼터표준데이터 (공공데이터포털)](https://www.data.go.kr/data/15013199/standard.do)')
-st.write('**내 위치 표시**: 아래 위치 버튼을 눌러 브라우저 위치 권한을 허용하세요. 위치는 이 화면의 지도와 거리 계산에만 사용하고 파일에 저장하지 않습니다.')
-location=streamlit_geolocation() if st.checkbox('내 위치 확인하기 (선택)',value=False) else None
-user_lat=user_lon=None
-if isinstance(location,dict) and location.get('latitude') is not None and location.get('longitude') is not None:
+st.write('**내 위치 표시**: 버튼을 누르면 브라우저가 위치 권한을 요청합니다. 위치는 지도와 거리 계산에만 사용합니다.')
+if 'geo_enabled' not in st.session_state:
+    st.session_state.geo_enabled = False
+if 'geo_coords' not in st.session_state:
+    st.session_state.geo_coords = None
+left, right = st.columns([2, 1])
+with left:
+    if st.button('📍 내 위치 가져오기', type='primary', use_container_width=True):
+        st.session_state.geo_enabled = True
+with right:
+    if st.button('위치 표시 해제', use_container_width=True):
+        st.session_state.geo_enabled = False
+        st.session_state.geo_coords = None
+if st.session_state.geo_enabled:
+    st.caption('위치 요청 창이 나타나면 허용을 누르세요. GPS가 켜져 있어야 합니다.')
     try:
-        user_lat=float(location['latitude']);user_lon=float(location['longitude'])
-        if not (-90<=user_lat<=90 and -180<=user_lon<=180):user_lat=user_lon=None
-    except (ValueError,TypeError): user_lat=user_lon=None
-if user_lat is not None:
+        location = streamlit_geolocation()
+        if isinstance(location, dict) and location.get('latitude') is not None and location.get('longitude') is not None:
+            lat, lon = float(location['latitude']), float(location['longitude'])
+            if -90 <= lat <= 90 and -180 <= lon <= 180:
+                st.session_state.geo_coords = (lat, lon)
+    except Exception as exc:
+        st.warning('위치 구성요소를 불러오지 못했습니다. 페이지를 새로고침하고 다시 시도하세요.')
+user_lat = user_lon = None
+if st.session_state.geo_enabled and st.session_state.geo_coords is not None:
+    user_lat, user_lon = st.session_state.geo_coords
     st.success('현재 위치를 확인했습니다. 지도에서 파란색 점으로 표시합니다.')
+elif st.session_state.geo_enabled:
+    st.warning('위치 응답을 기다리는 중입니다. 태블릿의 위치 서비스와 Chrome 사이트 위치 권한을 확인한 뒤 새로고침해 보세요.')
 else:
-    st.info('위치 권한을 허용하지 않으면 칠성동 중심 지도만 표시됩니다. 위치 공유는 선택 사항입니다.')
+    st.info('위치 확인은 선택 사항입니다. 현재는 칠성동 중심 지도를 표시합니다.')
 shelter_path=Path(__file__).parent/'data'/'shelters.csv'
 sh=None
 if shelter_path.exists():
