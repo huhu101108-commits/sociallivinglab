@@ -4,9 +4,11 @@ import numpy as np
 import plotly.express as px
 from model import parse_csv,normalize,evaluate,predict_next
 from kma_api import fetch_asos
+from forecast import fetch_forecast
 
 st.set_page_config(page_title='칠성동 AI 폭염 안전지킴이',page_icon='☀️',layout='wide')
 st.title('☀️ 칠성동 AI 폭염 안전지킴이')
+st.markdown('**칠성동의 폭염을 데이터로 이해하고, 안전하게 대비하는 연구용 웹사이트**')
 st.caption('대구 북구 칠성동 전용 연구용 웹앱 | 대구 ASOS 143 관측자료를 대리 지표로 사용')
 st.warning('대구 관측소의 온도는 칠성동 실측값이 아닙니다. 통계 예측은 기상청 공식 예보·폭염특보나 의료 판단을 대체하지 않습니다.')
 
@@ -14,6 +16,47 @@ st.warning('대구 관측소의 온도는 칠성동 실측값이 아닙니다. �
 def from_upload(files): return normalize([parse_csv(raw) for name,raw in files])
 @st.cache_data(show_spinner='모델 학습과 시간순 검증 중…')
 def run_model(data): return evaluate(data)
+
+# 공식 단기예보는 머신러닝 결과와 구분해서 표시합니다.
+@st.cache_data(ttl=3600,show_spinner='기상청 공식 단기예보 불러오는 중…')
+def official_forecast(key):
+    return fetch_forecast(key)
+
+st.subheader('🌤️ 칠성동 인근 기상청 공식 단기예보')
+st.caption('기상청 격자 예보이며 칠성동 특정 주소의 실측 온도가 아닙니다. AI 자체 예측과 구분됩니다.')
+try:
+    secret_key=st.secrets.get('KMA_FORECAST_KEY','')
+except Exception:
+    secret_key=''
+if secret_key:
+    try:
+        forecast,issued,grid_xy=official_forecast(secret_key)
+        st.caption(f'기상청 발표: {issued:%Y-%m-%d %H:%M} KST · 예보 격자 {grid_xy[0]}, {grid_xy[1]} · 1시간 캐시')
+        cols=st.columns(3)
+        today=pd.Timestamp.now(tz='Asia/Seoul').date()
+        future=forecast[forecast.index.date>=today]
+        if not future.empty:
+            if 'TMP' in future:
+                next_t=future['TMP'].dropna()
+                if not next_t.empty:cols[0].metric('가장 가까운 시간대 예보 기온',f'{next_t.iloc[0]:.1f}°C')
+            if 'TMX' in future:
+                mx=future['TMX'].dropna()
+                if not mx.empty:cols[1].metric('예보 기간 최고기온',f'{mx.max():.1f}°C')
+            if 'REH' in future:
+                rh=future['REH'].dropna()
+                if not rh.empty:cols[2].metric('가장 가까운 시간대 예보 습도',f'{rh.iloc[0]:.0f}%')
+            if 'TMP' in future:
+                graph=future[['TMP']].dropna().reset_index()
+                st.line_chart(graph,x='date',y='TMP',x_label='예보 시각',y_label='기온(°C)')
+            high=bool(('TMX' in future and future['TMX'].ge(33).any()) or ('TMP' in future and future['TMP'].ge(33).any()))
+            if high:st.warning('예보에 33°C 이상인 시간대가 포함됩니다. 기상청 폭염특보도 확인하세요.')
+            else:st.info('현재 조회된 예보에서 33°C 이상인 값은 확인되지 않았습니다. 공식 폭염특보는 별도로 확인하세요.')
+    except Exception as e:
+        st.warning(f'기상청 예보 연결 실패: {e}')
+else:
+    st.info('관리자가 Streamlit 앱 Secrets에 KMA_FORECAST_KEY를 설정하면, 방문자에게 기상청 단기예보가 자동 표시됩니다. 방문자는 인증키를 입력할 필요가 없습니다.')
+st.markdown('[기상청 날씨누리에서 공식 예보·특보 확인](https://www.weather.go.kr/)')
+st.divider()
 
 with st.sidebar:
     st.header('기상 자료 연결')
@@ -39,6 +82,8 @@ with st.sidebar:
     st.caption('데이터 기준: 2006~2025년 학습 권장. 2026년 예보를 표시하려면 최신 관측자료와 공식 예보를 별도로 연동해야 합니다.')
 
 if data is None:
+    st.subheader('시작하기')
+    st.markdown('① 왼쪽 메뉴에서 **기상청 CSV 업로드** 또는 **API 자동 수집**을 선택하세요. ② 분석이 끝나면 AI 검증 결과와 폭염 대응 정보를 볼 수 있습니다.')
     st.info('왼쪽에서 기상청 CSV를 올리거나 API 인증키로 20년치 데이터를 수집하면 AI가 학습을 시작합니다. 자료가 없을 때는 임의의 예측을 표시하지 않습니다.')
     st.markdown('**앱 기능**: ① 과거 폭염 변화 ② 시간순 검증된 AI 예측 ③ 칠성동 쉼터 안내 ④ 온열질환 예방 ⑤ 정책 분석')
     st.stop()
