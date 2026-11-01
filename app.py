@@ -1,826 +1,196 @@
-
-"""칠성동 AI 폭염 안전지킴이"""
-
+"""칠성동 AI 폭염 안전지킴이: official forecast + validated research ML."""
 from pathlib import Path
+from datetime import date, timedelta
+import pydeck as pdk
+from streamlit_geolocation import streamlit_geolocation
+from future7 import predict_seven_days
+from shelters import parse_shelters, distances_km
 import pandas as pd
 import streamlit as st
 import plotly.express as px
-
 from model import parse_csv, normalize, evaluate, predict_next
 from kma_api import fetch_asos
 from forecast import fetch_forecast
 
+st.set_page_config(page_title='칠성동 AI 폭염 안전지킴이',page_icon='☀️',layout='wide')
+st.title('☀️ 칠성동 AI 폭염 안전지킴이')
+st.caption('대구 북구 칠성동 · 공식 기상예보 자동 조회 + 2006~2025년 대구 ASOS 관측자료 기반 AI 연구')
+st.warning('대구 ASOS 관측소 자료와 기상청 예보 격자는 칠성동 개별 주소의 실측값이 아닙니다. 공식 특보·의료 판단을 대체하지 않습니다.')
 
-# =========================================================
-# 1. 기본 설정
-# =========================================================
+def secret(name):
+    try: return str(st.secrets.get(name,'')).strip()
+    except Exception: return ''
 
-st.set_page_config(
-    page_title="칠성동 AI 폭염 안전지킴이",
-    page_icon="☀️",
-    layout="wide"
-)
+@st.cache_data(ttl=3600,show_spinner='기상청 공식 예보를 조회하고 있습니다…')
+def cached_forecast(key): return fetch_forecast(key)
 
-st.title("☀️ 칠성동 AI 폭염 안전지킴이")
+@st.cache_data(show_spinner='기상 관측자료를 정리하고 있습니다…')
+def cached_csv(content): return normalize([parse_csv(content)])
 
-st.caption(
-    "대구 북구 칠성동 | 기상청 공식 예보와 "
-    "2006~2025년 ASOS 관측자료를 활용한 AI 연구"
-)
+@st.cache_data(show_spinner='연도별 시간순 검증으로 머신러닝 모델을 학습하고 있습니다…')
+def cached_model(df): return evaluate(df)
 
-st.warning(
-    "대구 ASOS 관측소 자료는 칠성동 특정 주소의 실측값이 아닙니다. "
-    "AI 예측은 연구용이며 기상청 공식 특보나 의료 판단을 대체하지 않습니다."
-)
+@st.cache_data(ttl=86400,show_spinner='기상청 ASOS 20년 관측자료를 수집하고 있습니다…')
+def cached_asos(key): return fetch_asos(key,start='2006-01-01',end='2025-12-31')
 
+@st.cache_data(ttl=21600,show_spinner='올해 최신 ASOS 관측자료를 조회하고 있습니다…')
+def cached_recent_asos(key,year,end):
+    return fetch_asos(key,start=f'{year}-01-01',end=end)
 
-# =========================================================
-# 2. 인증키 자동 로드
-# =========================================================
-
-def get_secret(name):
+st.header('1. 기상청 공식 단기예보')
+key=secret('KMA_FORECAST_KEY')
+forecast=None
+if key:
     try:
-        return str(st.secrets.get(name, "")).strip()
-    except Exception:
-        return ""
-
-
-FORECAST_KEY = get_secret("KMA_FORECAST_KEY")
-ASOS_KEY = get_secret("ASOS_SERVICE_KEY")
-
-
-# =========================================================
-# 3. 데이터 캐시
-# =========================================================
-
-@st.cache_data(
-    ttl=3600,
-    show_spinner="기상청 공식 예보를 조회하고 있습니다..."
-)
-def load_forecast(key):
-    return fetch_forecast(key)
-
-
-@st.cache_data(
-    ttl=86400,
-    show_spinner="2006~2025년 ASOS 관측자료를 수집하고 있습니다..."
-)
-def load_asos(key):
-    return fetch_asos(
-        key,
-        start="2006-01-01",
-        end="2025-12-31"
-    )
-
-
-@st.cache_data(
-    show_spinner="관측자료를 정리하고 있습니다..."
-)
-def load_csv(content):
-    return normalize([parse_csv(content)])
-
-
-@st.cache_data(
-    show_spinner="AI 모델을 학습하고 검증하고 있습니다..."
-)
-def train_model(data):
-    return evaluate(data)
-
-
-# =========================================================
-# 4. 기상청 공식 단기예보
-# =========================================================
-
-st.header("1. 칠성동 인근 기상청 공식 단기예보")
-
-st.caption(
-    "기상청 예보 격자 자료이며 "
-    "AI 자체 예측 결과와는 구분됩니다."
-)
-
-forecast = None
-
-if FORECAST_KEY:
-
-    try:
-        forecast, issued, grid_xy = load_forecast(
-            FORECAST_KEY
-        )
-
-        st.caption(
-            f"기상청 발표: {issued:%Y-%m-%d %H:%M} KST "
-            f"| 예보 격자: {grid_xy[0]}, {grid_xy[1]}"
-        )
-
-        now = (
-            pd.Timestamp.now(tz="Asia/Seoul")
-            .tz_localize(None)
-        )
-
-        future = forecast[
-            forecast.index >= now.floor("h")
-        ]
-
-        if future.empty:
-            future = forecast
-
-        temperature = (
-            future["TMP"].dropna()
-            if "TMP" in future
-            else pd.Series(dtype=float)
-        )
-
-        humidity = (
-            future["REH"].dropna()
-            if "REH" in future
-            else pd.Series(dtype=float)
-        )
-
-        highest = (
-            future["TMX"].dropna()
-            if "TMX" in future
-            else pd.Series(dtype=float)
-        )
-
-        col1, col2, col3 = st.columns(3)
-
-        with col1:
-            st.metric(
-                "가장 가까운 시간대 예보 기온",
-                (
-                    f"{temperature.iloc[0]:.1f}°C"
-                    if len(temperature)
-                    else "자료 없음"
-                )
-            )
-
-        with col2:
-            st.metric(
-                "예보 기간 최고기온",
-                (
-                    f"{highest.max():.1f}°C"
-                    if len(highest)
-                    else "자료 없음"
-                )
-            )
-
-        with col3:
-            st.metric(
-                "가장 가까운 시간대 예보 습도",
-                (
-                    f"{humidity.iloc[0]:.0f}%"
-                    if len(humidity)
-                    else "자료 없음"
-                )
-            )
-
-        if len(temperature):
-
-            chart_data = temperature.rename(
-                "예보 기온(°C)"
-            )
-
-            st.line_chart(chart_data)
-
-        hot_forecast = (
-            (
-                len(temperature) > 0
-                and temperature.ge(33).any()
-            )
-            or
-            (
-                len(highest) > 0
-                and highest.ge(33).any()
-            )
-        )
-
-        if hot_forecast:
-            st.warning(
-                "예보에 33°C 이상 기온이 포함되어 있습니다. "
-                "기상청 공식 폭염특보를 확인하세요."
-            )
+        forecast,issued,grid_xy=cached_forecast(key)
+        st.caption(f'발표: {issued:%Y-%m-%d %H:%M} KST · 예보 격자 {grid_xy[0]}, {grid_xy[1]} · 최대 1시간 캐시')
+        now=pd.Timestamp.now(tz='Asia/Seoul').tz_localize(None)
+        future=forecast[forecast.index>=now.floor('h')]
+        if future.empty: future=forecast
+        a,b,c=st.columns(3)
+        temp=future['TMP'].dropna() if 'TMP' in future else pd.Series(dtype=float)
+        hum=future['REH'].dropna() if 'REH' in future else pd.Series(dtype=float)
+        highs=future['TMX'].dropna() if 'TMX' in future else pd.Series(dtype=float)
+        a.metric('다음 시간대 기온',f'{temp.iloc[0]:.1f}°C' if len(temp) else '자료 없음')
+        b.metric('예보 기간 최고기온',f'{highs.max():.1f}°C' if len(highs) else '자료 없음')
+        c.metric('다음 시간대 습도',f'{hum.iloc[0]:.0f}%' if len(hum) else '자료 없음')
+        if len(temp):
+            st.line_chart(temp.rename('기온(°C)'))
+        if (len(temp) and temp.ge(33).any()) or (len(highs) and highs.ge(33).any()):
+            st.warning('조회된 예보에 33°C 이상의 기온이 포함됩니다. 공식 폭염특보와 행동요령을 확인하세요.')
         else:
-            st.info(
-                "조회된 예보에서 33°C 이상 기온이 "
-                "확인되지 않았습니다. "
-                "공식 폭염특보는 별도로 확인하세요."
-            )
-
+            st.info('조회된 예보에서 33°C 이상 기온이 확인되지 않았습니다. 공식 폭염특보는 별도로 확인하세요.')
     except Exception:
-        st.error(
-            "기상청 공식 예보를 불러오지 못했습니다. "
-            "인증키, API 승인 상태 또는 서버 연결을 확인하세요."
-        )
-
+        st.error('공식 예보를 불러오지 못했습니다. API 승인·인증 설정 또는 네트워크를 확인하세요. 인증키는 표시하지 않습니다.')
 else:
-    st.info(
-        "Streamlit Secrets에 "
-        "KMA_FORECAST_KEY가 등록되어 있지 않습니다."
-    )
+    st.info('운영자가 Streamlit Secrets에 KMA_FORECAST_KEY를 등록하면 공식 예보가 자동 표시됩니다.')
+st.markdown('[기상청 공식 예보·특보 확인](https://www.weather.go.kr/)')
 
-st.markdown(
-    "[기상청 공식 날씨 및 특보 확인]"
-    "(https://www.weather.go.kr/)"
-)
-
-
-# =========================================================
-# 5. ASOS 관측자료 자동 수집
-# =========================================================
-
-st.divider()
-
-st.header("2. 20년 관측자료 기반 AI 최고기온 예측")
-
-st.caption(
-    "대구 ASOS 143 관측소의 과거 관측자료를 이용합니다. "
-    "인증키는 서버에서 자동으로 읽으므로 "
-    "방문자가 직접 입력할 필요가 없습니다."
-)
-
-data = None
-data_source = None
-
-data_path = (
-    Path(__file__).parent
-    / "data"
-    / "asos_143.csv"
-)
-
-# 저장소에 공식 관측자료가 있으면 우선 사용
-if data_path.exists():
-
+st.header('2. AI 일주일 최고기온 예측 (오늘 포함 7일)')
+st.caption('실험적 AI 예측: 최신 대구 ASOS 관측자료 + 과거 20년 데이터로 학습합니다. 공식 예보가 아니며 7일 뒤로 갈수록 오차가 누적될 수 있습니다.')
+local=Path(__file__).parent/'data'/'asos_143.csv'
+data=None
+source=None
+if local.exists():
     try:
-        data = load_csv(
-            data_path.read_bytes()
-        )
-
-        data_source = (
-            "저장소에 포함된 ASOS 관측자료"
-        )
-
+        data=cached_csv(local.read_bytes()); source='저장소 ASOS CSV'
     except Exception:
-        st.warning(
-            "저장된 ASOS CSV 파일을 읽지 못했습니다."
-        )
-
-
-# 저장된 자료가 없으면 API 자동 수집
-if data is None and ASOS_KEY:
-
+        st.warning('저장된 ASOS CSV를 읽지 못했습니다.')
+asos_key=secret('ASOS_SERVICE_KEY')
+if data is None and asos_key:
     try:
-        data = load_asos(ASOS_KEY)
-
-        data_source = (
-            "공공데이터포털 ASOS 일자료 API"
-        )
-
+        data=cached_asos(asos_key);source='공공데이터포털 ASOS API'
     except Exception:
-        st.warning(
-            "ASOS 관측자료 자동 수집에 실패했습니다. "
-            "공공데이터포털 인증키와 API 응답을 확인하세요."
-        )
-
-
-# 운영자용 대체 업로드
+        st.warning('과거 ASOS 자료 수집에 실패했습니다. 인증키·API 상태를 확인하세요.')
+if data is not None and asos_key:
+    try:
+        today_kst=pd.Timestamp.now(tz='Asia/Seoul').date()
+        yesterday=today_kst-timedelta(days=1)
+        # Read each year since the historical dataset ended. Avoid a 2025->2026 gap.
+        last_year=data.index.max().year
+        recent=[]
+        for year in range(last_year+1,yesterday.year+1):
+            if year<=yesterday.year:
+                finish=min(yesterday,date(year,12,31))
+                recent.append(cached_recent_asos(asos_key,year,finish.isoformat()).loc[f'{year}-01-01':finish.isoformat()])
+        # Refresh the current year even when it was present in the historical CSV.
+        if yesterday.year<=last_year:
+            recent.append(cached_recent_asos(asos_key,yesterday.year,yesterday.isoformat()).loc[f'{yesterday.year}-01-01':yesterday.isoformat()])
+        if recent:
+            combined=pd.concat([data]+recent).sort_index()
+            data=combined[~combined.index.duplicated(keep='last')].asfreq('D')
+            source+=' + 최신 관측자료'
+    except Exception:
+        st.warning('최신 ASOS 관측자료를 갱신하지 못했습니다. 최신 7일 예측은 제한될 수 있습니다.')
 if data is None:
-
-    st.info(
-        "ASOS 자료가 아직 연결되지 않았습니다. "
-        "운영자는 CSV 파일을 이용해 자료를 연결할 수도 있습니다."
-    )
-
-    with st.expander("연구용 ASOS CSV 업로드"):
-
-        uploaded = st.file_uploader(
-            "대구 ASOS 관측자료 CSV",
-            type=["csv"],
-            key="asos_upload"
-        )
-
-        if uploaded is not None:
-
-            try:
-                data = load_csv(
-                    uploaded.getvalue()
-                )
-
-                data_source = (
-                    "업로드된 ASOS 관측자료"
-                )
-
-            except Exception:
-                st.error(
-                    "CSV 파일의 형식을 확인하세요."
-                )
-
-
-# =========================================================
-# 6. AI 모델 학습 및 평가
-# =========================================================
-
-if data is not None:
-
-    st.success(
-        f"관측자료 연결 성공: {data_source}"
-    )
-
-    st.write(
-        f"관측 기간: "
-        f"{data.index.min().date()} ~ "
-        f"{data.index.max().date()}"
-    )
-
-    st.write(
-        f"최고기온 유효 데이터: "
-        f"{data['tmax'].notna().sum():,}일"
-    )
-
+    st.error('AI 예측용 ASOS 자료가 없습니다. ASOS_SERVICE_KEY 또는 data/asos_143.csv를 확인하세요.')
+else:
+    st.success(f'ASOS 관측자료: {source} · {data.index.min().date()} ~ {data.index.max().date()}')
     try:
-
-        result = train_model(data)
-
-        st.subheader("AI 모델 성능 비교")
-
-        st.caption(
-            "과거 데이터를 시간순으로 나누어 "
-            "AI 예측값과 실제 관측값을 비교합니다."
-        )
-
-        metrics = result["metrics"]
-
-        st.dataframe(
-            metrics,
-            use_container_width=True,
-            hide_index=True
-        )
-
-        # -------------------------------------------------
-        # 실제 기온과 AI 예측 기온 비교
-        # -------------------------------------------------
-
-        evaluation = result["evaluation"]
-        selected = result["selected"]
-
-        comparison = evaluation[
-            evaluation["model"] == selected
-        ].tail(120)
-
-        if not comparison.empty:
-
-            fig = px.line(
-                comparison,
-                x="date",
-                y=["actual", "pred"],
-                title=(
-                    f"{selected}: 실제값과 예측값 비교"
-                ),
-                labels={
-                    "date": "날짜",
-                    "value": "최고기온(°C)",
-                    "variable": "구분"
-                }
-            )
-
-            st.plotly_chart(
-                fig,
-                use_container_width=True
-            )
-
-        # -------------------------------------------------
-        # 연도별 폭염일수
-        # TypeError 수정 부분
-        # -------------------------------------------------
-
-        st.subheader("연도별 폭염일수 분석")
-
-        yearly = pd.DataFrame({
-            "연도": data.index.year,
-            "폭염일": (
-                data["tmax"] >= 33
-            ).astype(int).to_numpy()
-        })
-
-        yearly = (
-            yearly
-            .groupby(
-                "연도",
-                as_index=False
-            )["폭염일"]
-            .sum()
-            .rename(
-                columns={
-                    "폭염일": "33°C 이상 일수"
-                }
-            )
-        )
-
-        fig_yearly = px.bar(
-            yearly,
-            x="연도",
-            y="33°C 이상 일수",
-            title=(
-                "대구 ASOS 관측소 "
-                "연도별 33°C 이상 일수"
-            ),
-            labels={
-                "연도": "연도",
-                "33°C 이상 일수": "일수"
-            }
-        )
-
-        st.plotly_chart(
-            fig_yearly,
-            use_container_width=True
-        )
-
-        # -------------------------------------------------
-        # AI 다음 날 최고기온 추정
-        # -------------------------------------------------
-
-        st.subheader("AI 최고기온 추정 결과")
-
-        predicted = predict_next(result)
-
-        if predicted is not None:
-
-            target, predicted_temp = predicted
-
-            target_date = pd.Timestamp(
-                target
-            ).date()
-
-            st.metric(
-                f"AI 추정 대상: {target_date}",
-                f"{predicted_temp:.1f}°C"
-            )
-
-            today = pd.Timestamp.now(
-                tz="Asia/Seoul"
-            ).date()
-
-            if target_date < today:
-
-                st.warning(
-                    "이 결과는 과거 관측자료 종료일 "
-                    "다음 날에 대한 추정입니다. "
-                    "현재 날짜의 실시간 AI 예보가 아닙니다."
-                )
-
-            elif target_date > (
-                pd.Timestamp(today)
-                + pd.Timedelta(days=2)
-            ).date():
-
-                st.warning(
-                    "학습자료의 마지막 날짜와 현재 날짜가 "
-                    "일치하지 않습니다."
-                )
-
-            else:
-
-                st.info(
-                    "AI 통계 예측 결과입니다. "
-                    "기상청 공식 예보와 구분해 해석하세요."
-                )
-
-            # 같은 날짜의 공식 예보가 있을 때만 비교
-            if forecast is not None:
-
-                same_day = forecast.loc[
-                    forecast.index.date == target_date
-                ]
-
-                if (
-                    not same_day.empty
-                    and "TMX" in same_day.columns
-                ):
-
-                    official = (
-                        same_day["TMX"]
-                        .dropna()
-                    )
-
-                    if len(official):
-
-                        st.metric(
-                            "같은 날짜 기상청 공식 최고기온",
-                            f"{official.max():.1f}°C"
-                        )
-
-        # -------------------------------------------------
-        # 성능 결과 다운로드
-        # -------------------------------------------------
-
-        st.download_button(
-            label="AI 검증 결과 CSV 다운로드",
-            data=metrics.to_csv(
-                index=False
-            ).encode("utf-8-sig"),
-            file_name="ai_validation.csv",
-            mime="text/csv"
-        )
-
+        result=cached_model(data)
+        st.subheader('시간순 검증 성능')
+        st.dataframe(result['metrics'],hide_index=True,use_container_width=True)
+        ev=result['evaluation'];selected=result['selected']
+        view=ev[ev['model']==selected].tail(120)
+        st.plotly_chart(px.line(view,x='date',y=['actual','pred'],title=f'{selected} 실제값 vs 예측값'),use_container_width=True)
+        yearly=pd.DataFrame({'연도':data.index.year,'폭염일':(data.tmax>=33).fillna(False).astype(int).to_numpy()})
+        yearly=yearly.groupby('연도',as_index=False)['폭염일'].sum().rename(columns={'폭염일':'33°C 이상 일수'})
+        st.plotly_chart(px.bar(yearly,x='연도',y='33°C 이상 일수',title='대구 ASOS 연도별 33°C 이상 일수'),use_container_width=True)
+        st.subheader('오늘부터 7일간 AI 최고기온 추정')
+        try:
+            week=predict_seven_days(result)
+            st.caption(f'최종 실측 날짜: {week.iloc[0]["관측 기반 마지막 날짜"]} · 예측 모델: {selected} · 단위: °C')
+            st.plotly_chart(px.line(week,x='날짜',y='AI 예상 최고기온(°C)',markers=True,title='AI 7일 최고기온 예측'),use_container_width=True)
+            st.dataframe(week[['날짜','AI 예상 최고기온(°C)']].style.format({'AI 예상 최고기온(°C)':'{:.1f}'}),hide_index=True,use_container_width=True)
+            st.warning('이 모델은 매일의 AI 예측을 다음 날 입력값으로 다시 사용합니다. 예측이 멀어질수록 오차가 누적되며 공식 폭염특보의 근거로 사용할 수 없습니다.')
+            st.download_button('AI 7일 예측 CSV 내려받기',week.to_csv(index=False).encode('utf-8-sig'),'ai_7day.csv','text/csv')
+        except ValueError as exc:
+            st.error(str(exc))
+        st.download_button('AI 검증 지표 CSV 내려받기',result['metrics'].to_csv(index=False).encode('utf-8-sig'),'ai_validation.csv','text/csv')
     except Exception as exc:
+        st.error(f'AI 학습/검증 오류: {type(exc).__name__}. 관측자료 누락 및 model.py 버전을 확인하세요.')
 
-        st.error(
-            "AI 모델 처리 중 오류가 발생했습니다."
-        )
+st.header('3. 폭염 위험 안내')
+st.caption('예보 온도를 이용한 참고용 안내이며 공식 폭염특보·온열질환 위험등급이 아닙니다.')
+if forecast is not None and 'TMP' in forecast:
+    future=forecast[forecast.index>=pd.Timestamp.now(tz='Asia/Seoul').tz_localize(None).floor('h')]
+    mx=future['TMP'].max() if len(future) else float('nan')
+    if pd.notna(mx):
+        if mx>=33: st.error('참고 안내: 예보에 33°C 이상 시간대가 있습니다. 야외활동을 줄이고 시원한 곳에서 휴식하세요.')
+        elif mx>=30: st.warning('참고 안내: 예보에 30°C 이상 시간대가 있습니다. 수분 섭취와 휴식에 신경 쓰세요.')
+        else: st.info('조회된 시간대 기온은 30°C 미만입니다. 날씨 변화와 공식 특보를 계속 확인하세요.')
+else: st.info('예보 데이터가 연결되면 온도 기반 참고 안내가 표시됩니다.')
+st.markdown('**건강 수칙:** 물 자주 마시기, 그늘이나 시원한 장소에서 쉬기, 더운 시간대 야외활동 줄이기. 의식 변화 등 위급한 상황에서는 119에 신고하세요.')
 
-        st.caption(
-            f"오류 유형: {type(exc).__name__}"
-        )
-
-        # 인증키나 전체 요청 URL은 출력하지 않음
-        st.info(
-            "모델 데이터 형식 또는 "
-            "model.py 함수 반환값을 확인하세요."
-        )
-
-
-# =========================================================
-# 7. 폭염 위험 안내
-# =========================================================
-
-st.divider()
-
-st.header("3. 폭염 위험 안내")
-
-st.caption(
-    "기상청 예보 기온을 이용한 참고용 안내입니다. "
-    "공식 폭염특보와는 다릅니다."
-)
-
-if forecast is not None and "TMP" in forecast.columns:
-
-    now = (
-        pd.Timestamp.now(tz="Asia/Seoul")
-        .tz_localize(None)
-        .floor("h")
-    )
-
-    future = forecast[
-        forecast.index >= now
-    ]
-
-    if not future.empty:
-
-        max_temp = pd.to_numeric(
-            future["TMP"],
-            errors="coerce"
-        ).max()
-
-        if pd.notna(max_temp):
-
-            if max_temp >= 33:
-
-                st.error(
-                    "예보에 33°C 이상 시간대가 있습니다. "
-                    "야외활동을 줄이고 시원한 장소에서 쉬세요."
-                )
-
-            elif max_temp >= 30:
-
-                st.warning(
-                    "예보에 30°C 이상 시간대가 있습니다. "
-                    "수분 섭취와 휴식에 신경 쓰세요."
-                )
-
-            else:
-
-                st.info(
-                    "조회된 예보의 최고 시간대 기온은 "
-                    "30°C 미만입니다. "
-                    "공식 특보는 별도로 확인하세요."
-                )
-
-        else:
-
-            st.info(
-                "온도 예보 데이터가 부족합니다."
-            )
-
-    else:
-
-        st.info(
-            "현재 이후의 기온 예보가 없습니다."
-        )
-
-else:
-
-    st.info(
-        "기상청 예보가 연결되면 "
-        "폭염 위험 참고 안내가 표시됩니다."
-    )
-
-
-st.markdown(
-    """
-    **폭염 대비 행동요령**
-
-    - 물을 자주 마시기
-    - 그늘이나 시원한 장소에서 충분히 쉬기
-    - 더운 시간대의 야외활동 줄이기
-    - 고령자와 거동이 불편한 이웃의 안전 확인하기
-    - 의식 변화 등 위급한 상황에서는 119에 신고하기
-    """
-)
-
-
-# =========================================================
-# 8. 칠성동 무더위쉼터 안내
-# =========================================================
-
-st.divider()
-
-st.header("4. 칠성동 무더위쉼터 안내")
-
-st.caption(
-    "실제 지자체 자료로 확인된 쉼터만 표시합니다. "
-    "운영시간과 이용 가능 여부는 방문 전에 확인하세요."
-)
-
-shelter_path = (
-    Path(__file__).parent
-    / "data"
-    / "shelters.csv"
-)
-
-shelters = None
-
-
-# 저장소의 쉼터 CSV 자동 로드
-if shelter_path.exists():
-
+st.header('4. 무더위쉼터 지도 · 내 위치')
+st.caption('쉼터 정보는 행정안전부/지자체 공식 자료만 사용합니다. 지도에 보이는 위치와 실제 운영 여부는 다를 수 있으니 방문 전에 확인하세요.')
+st.markdown('[전국무더위쉼터표준데이터 (공공데이터포털)](https://www.data.go.kr/data/15013199/standard.do)')
+st.write('**내 위치 표시**: 아래 위치 버튼을 눌러 브라우저 위치 권한을 허용하세요. 위치는 이 화면의 지도와 거리 계산에만 사용하고 파일에 저장하지 않습니다.')
+location=streamlit_geolocation()
+user_lat=user_lon=None
+if isinstance(location,dict) and location.get('latitude') is not None and location.get('longitude') is not None:
     try:
-        shelters = pd.read_csv(
-            shelter_path,
-            encoding="utf-8-sig"
-        )
-
-    except Exception:
-
-        st.warning(
-            "쉼터 데이터 파일을 읽지 못했습니다."
-        )
-
-
-# 파일이 없을 때만 수동 업로드
-if shelters is None:
-
-    with st.expander("운영자용 쉼터 CSV 업로드"):
-
-        shelter_file = st.file_uploader(
-            "검증된 쉼터 CSV",
-            type=["csv"],
-            key="shelter_upload"
-        )
-
-        if shelter_file is not None:
-
-            try:
-                shelters = pd.read_csv(
-                    shelter_file,
-                    encoding="utf-8-sig"
-                )
-
-            except Exception:
-                st.error(
-                    "쉼터 CSV 형식을 확인하세요."
-                )
-
-
-if shelters is not None and not shelters.empty:
-
-    st.success(
-        f"무더위쉼터 {len(shelters)}개 자료 연결"
-    )
-
-    st.dataframe(
-        shelters,
-        use_container_width=True,
-        hide_index=True
-    )
-
-    lat_col = next(
-        (
-            col
-            for col in [
-                "위도",
-                "lat",
-                "latitude"
-            ]
-            if col in shelters.columns
-        ),
-        None
-    )
-
-    lon_col = next(
-        (
-            col
-            for col in [
-                "경도",
-                "lon",
-                "longitude"
-            ]
-            if col in shelters.columns
-        ),
-        None
-    )
-
-    if lat_col and lon_col:
-
-        locations = pd.DataFrame({
-            "lat": pd.to_numeric(
-                shelters[lat_col],
-                errors="coerce"
-            ),
-            "lon": pd.to_numeric(
-                shelters[lon_col],
-                errors="coerce"
-            )
-        }).dropna()
-
-        # 대구 인근의 정상 좌표만 표시
-        locations = locations[
-            locations["lat"].between(35, 36)
-            &
-            locations["lon"].between(128, 129)
-        ]
-
-        if not locations.empty:
-
-            st.map(locations)
-
-        else:
-
-            st.info(
-                "표시 가능한 쉼터 좌표가 없습니다."
-            )
-
-    else:
-
-        st.info(
-            "지도 표시에는 위도와 경도 열이 필요합니다."
-        )
-
+        user_lat=float(location['latitude']);user_lon=float(location['longitude'])
+        if not (-90<=user_lat<=90 and -180<=user_lon<=180):user_lat=user_lon=None
+    except (ValueError,TypeError): user_lat=user_lon=None
+if user_lat is not None:
+    st.success('현재 위치를 확인했습니다. 지도에서 파란색 점으로 표시합니다.')
 else:
+    st.info('위치 권한을 허용하지 않으면 칠성동 중심 지도만 표시됩니다. 위치 공유는 선택 사항입니다.')
+shelter_path=Path(__file__).parent/'data'/'shelters.csv'
+sh=None
+if shelter_path.exists():
+    try:sh=parse_shelters(shelter_path.read_bytes())
+    except Exception:st.warning('저장소의 쉼터 CSV 형식을 확인하세요.')
+if sh is None:
+    with st.expander('운영자용 공식 쉼터 CSV 시험 업로드'):
+        uploaded=st.file_uploader('쉼터명/주소/위도/경도 열이 있는 공식 CSV',type='csv',key='shelter_csv')
+        if uploaded:
+            try:sh=parse_shelters(uploaded.getvalue())
+            except ValueError as exc:st.warning(str(exc))
+    st.caption('방문자 모두에게 쉼터를 자동 표시하려면 공식 CSV를 GitHub의 data/shelters.csv에 저장하세요. 이 페이지에서 올린 파일은 영구 저장되지 않습니다.')
+# Map always renders, even without shelter data.
+center_lat,center_lon=(user_lat,user_lon) if user_lat is not None else (35.879,128.602)
+if sh is not None and len(sh):
+    if user_lat is not None:
+        sh=sh.copy();sh['직선거리(km)']=distances_km(sh,user_lat,user_lon).round(2)
+        sh=sh.sort_values('직선거리(km)')
+        st.subheader('현재 위치에서 가까운 쉼터')
+        st.dataframe(sh[['이름','주소','운영정보','직선거리(km)']].head(30),hide_index=True,use_container_width=True)
+        st.caption('표시된 거리는 직선거리이며 실제 도보 이동거리와 다릅니다.')
+    else:
+        st.dataframe(sh[['이름','주소','운영정보']].head(40),hide_index=True,use_container_width=True)
+else:
+    st.info('공식 무더위쉼터 좌표가 아직 등록되지 않았습니다. 위치 지도는 사용할 수 있지만 쉼터 점은 공식 CSV 연결 후 표시됩니다.')
+layers=[]
+if sh is not None and len(sh):
+    layers.append(pdk.Layer('ScatterplotLayer',sh,get_position='[lon, lat]',get_fill_color='[235, 96, 63, 210]',get_radius=95,pickable=True))
+if user_lat is not None:
+    layers.append(pdk.Layer('ScatterplotLayer',pd.DataFrame([{'lat':user_lat,'lon':user_lon,'이름':'내 위치','주소':'사용자 기기 위치','운영정보':''}]),get_position='[lon, lat]',get_fill_color='[30, 110, 240, 230]',get_radius=125,pickable=True))
+view=pdk.ViewState(latitude=center_lat,longitude=center_lon,zoom=12.5 if user_lat is None else 13.5,pitch=0)
+st.pydeck_chart(pdk.Deck(map_style=None,initial_view_state=view,layers=layers,tooltip={'text':'{이름}\n{주소}\n{운영정보}'}),use_container_width=True)
+st.caption('주황색: 공식 자료의 무더위쉼터 / 파란색: 권한을 허용한 사용자의 현재 위치. 위치 정확도는 기기와 브라우저에 따라 달라집니다.')
 
-    st.info(
-        "무더위쉼터 위치 데이터가 아직 연결되지 않았습니다. "
-        "운영자가 공식 쉼터 CSV를 등록하면 "
-        "방문자에게 자동 표시됩니다."
-    )
-
-
-# =========================================================
-# 9. 지역사회 정책 제안
-# =========================================================
-
-st.divider()
-
-st.header("5. 지역사회 정책 제안")
-
-st.markdown(
-    """
-    ### ① 폭염 취약계층 보호
-
-    고령자와 거동이 불편한 주민을 대상으로
-    폭염 시 안부 확인과 방문 돌봄을 강화한다.
-
-    ### ② 무더위쉼터 접근성 개선
-
-    칠성동의 쉼터 위치와 운영시간을 조사하고,
-    이동이 어려운 주민을 위한 지원 방안을 검토한다.
-
-    ### ③ AI 기반 폭염 대응
-
-    장기간 기온 관측자료와 AI 분석을 활용해
-    폭염 발생 특성을 연구하고,
-    향후 인구·녹지·건물 자료를 결합하여
-    지역별 취약도를 분석한다.
-
-    ### ④ 데이터 기반 행정
-
-    폭염 위험이 높은 시기에
-    취약계층 지원과 쉼터 운영을 강화할 수 있도록
-    객관적인 자료를 활용한다.
-    """
-)
-
-
-# =========================================================
-# 10. 출처
-# =========================================================
-
-st.divider()
-
-st.caption(
-    "자료 출처: 기상청 공식 단기예보, "
-    "기상청 ASOS 일자료(연결 시)"
-)
-
-st.caption(
-    "AI 분석 결과는 교육·연구 목적으로 제공됩니다. "
-    "실제 기상특보와 응급 대응은 공식 기관 안내를 따르세요."
-)
+st.header('5. 지역사회 정책 제안')
+st.markdown('고령자·거동불편자의 쉼터 접근성을 조사하고, 폭염 시 방문 돌봄과 이동 지원을 검토할 수 있습니다. 세부 동네 위험지도는 별도의 공간·인구·현장 관측자료를 확보한 뒤 제작해야 합니다.')
+st.caption('자료 출처: 기상청 공식 단기예보, 기상청 ASOS 일자료(연결 시). AI 성능 수치는 실제 자료로 검증된 경우에만 표시됩니다.')
