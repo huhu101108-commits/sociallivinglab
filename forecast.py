@@ -58,6 +58,6 @@ def fetch_forecast(key):
     df=pd.DataFrame(items)
     df['date']=pd.to_datetime(df['fcstDate']+df['fcstTime'],format='%Y%m%d%H%M')
     p=df.pivot_table(index='date',columns='category',values='fcstValue',aggfunc='first').sort_index()
-    for k in ('TMP','TMX','REH','POP'):
+    for k in ('TMP','TMX','TMN','REH','POP','WSD','PTY'):
         if k in p:p[k]=pd.to_numeric(p[k],errors='coerce')
     return p,base,(nx,ny)

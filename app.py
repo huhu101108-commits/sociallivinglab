@@ -1,4 +1,3 @@
-
 """칠성동 AI 폭염 안전지킴이: official forecast + validated research ML."""
 from pathlib import Path
 import json
@@ -6,18 +5,20 @@ import joblib
 from datetime import date, timedelta
 import pydeck as pdk
 from streamlit_geolocation import streamlit_geolocation
-from future7 import predict_seven_days
+from future7 import predict_seven_days, predict_minimum_seven_days
 from shelters import parse_shelters, distances_km
 import pandas as pd
+import numpy as np
 import streamlit as st
 import plotly.express as px
 from model import parse_csv, normalize, evaluate, predict_next, direct_features
 from kma_api import fetch_asos
 from forecast import fetch_forecast
+from climate_risks import weather_risks, historical_baseline, historical_extremes
 
-st.set_page_config(page_title='칠성동 AI 폭염 안전지킴이',page_icon='☀️',layout='wide')
-st.title('☀️ 칠성동 AI 폭염 안전지킴이')
-st.caption('대구 북구 칠성동 · 공식 기상예보 자동 조회 + 2006년 이후 대구 ASOS 관측자료 기반 AI 연구')
+st.set_page_config(page_title='칠성동 AI 기후 안전지킴이',page_icon='🌦️',layout='wide')
+st.title('🌦️ 칠성동 AI 기후 안전지킴이')
+st.caption('대구 북구 칠성동 · 사계절 기상 위험 감지 · 2006년 이후 관측자료 분석 · AI 최고기온 예측')
 st.warning('대구 ASOS 관측소 자료와 기상청 예보 격자는 칠성동 개별 주소의 실측값이 아닙니다. 공식 특보·의료 판단을 대체하지 않습니다.')
 
 def secret(name):
@@ -63,7 +64,24 @@ def historical_model_comparison(data, model_path, model_mtime):
     actual=data['tmax'].shift(-1).loc[valid].to_numpy()
     return pd.DataFrame({'날짜':dates,'실제 최고기온':actual,'AI 과거 재현값':pred})
 
-st.header('1. 기상청 공식 단기예보')
+def season_focus(forecast):
+    """Prioritize the actual forecast temperature, falling back to calendar season."""
+    month=pd.Timestamp.now(tz='Asia/Seoul').month
+    fallback=('저온', '최저기온', '한파·결빙·강풍·강수') if month in (11,12,1,2) else (('고온','최고기온','폭염·이상고온·강수') if month in (6,7,8) else ('변동','최고·최저기온','큰 일교차·이상기온·강수·강풍'))
+    if forecast is None or forecast.empty: return fallback
+    now=pd.Timestamp.now(tz='Asia/Seoul').tz_localize(None)
+    f=forecast.loc[forecast.index>=now.floor('h')]
+    if f.empty: return fallback
+    values=[]
+    for col in ('TMP','TMX','TMN'):
+        if col in f: values.extend(pd.to_numeric(f[col],errors='coerce').dropna().tolist())
+    if not values: return fallback
+    low,high=min(values),max(values)
+    if low<=5: return ('저온','최저기온','한파·결빙·이상저온·강풍')
+    if high>=28: return ('고온','최고기온','폭염·이상고온·건조')
+    return ('변동','최고·최저기온','이상기온·일교차·강수·강풍')
+
+st.header('1. 기상청 공식 단기예보와 기상 위험 감지')
 key=secret('KMA_FORECAST_KEY')
 forecast=None
 if key:
@@ -73,26 +91,51 @@ if key:
         now=pd.Timestamp.now(tz='Asia/Seoul').tz_localize(None)
         future=forecast[forecast.index>=now.floor('h')]
         if future.empty: future=forecast
-        a,b,c=st.columns(3)
-        temp=future['TMP'].dropna() if 'TMP' in future else pd.Series(dtype=float)
-        hum=future['REH'].dropna() if 'REH' in future else pd.Series(dtype=float)
-        highs=future['TMX'].dropna() if 'TMX' in future else pd.Series(dtype=float)
-        a.metric('다음 시간대 기온',f'{temp.iloc[0]:.1f}°C' if len(temp) else '자료 없음')
-        b.metric('예보 기간 최고기온',f'{highs.max():.1f}°C' if len(highs) else '자료 없음')
-        c.metric('다음 시간대 습도',f'{hum.iloc[0]:.0f}%' if len(hum) else '자료 없음')
-        if len(temp):
-            st.line_chart(temp.rename('기온(°C)'))
-        if (len(temp) and temp.ge(33).any()) or (len(highs) and highs.ge(33).any()):
-            st.warning('조회된 예보에 33°C 이상의 기온이 포함됩니다. 공식 폭염특보와 행동요령을 확인하세요.')
+        focus, primary, categories=season_focus(forecast)
+        st.info(f'**현재 중점: {primary} · {categories}** — 계절과 실제 예보 기온을 반영해 자동 선택했습니다.')
+        tmp=pd.to_numeric(future['TMP'],errors='coerce').dropna() if 'TMP' in future else pd.Series(dtype=float)
+        tmx=pd.to_numeric(future['TMX'],errors='coerce').dropna() if 'TMX' in future else pd.Series(dtype=float)
+        tmn=pd.to_numeric(future['TMN'],errors='coerce').dropna() if 'TMN' in future else pd.Series(dtype=float)
+        hum=pd.to_numeric(future['REH'],errors='coerce').dropna() if 'REH' in future else pd.Series(dtype=float)
+        high=max([v.max() for v in (tmp,tmx) if len(v)],default=float('nan'))
+        low=min([v.min() for v in (tmp,tmn) if len(v)],default=float('nan'))
+        a,b=st.columns(2)
+        if focus=='저온':
+            a.metric('예보 최저기온',f'{low:.1f}°C' if pd.notna(low) else '자료 없음')
+            b.metric('예보 최고기온',f'{high:.1f}°C' if pd.notna(high) else '자료 없음')
+        elif focus=='고온':
+            a.metric('예보 최고기온',f'{high:.1f}°C' if pd.notna(high) else '자료 없음')
+            b.metric('예보 최저기온',f'{low:.1f}°C' if pd.notna(low) else '자료 없음')
         else:
-            st.info('조회된 예보에서 33°C 이상 기온이 확인되지 않았습니다. 공식 폭염특보는 별도로 확인하세요.')
+            a.metric('예보 최저기온',f'{low:.1f}°C' if pd.notna(low) else '자료 없음')
+            b.metric('예보 최고기온',f'{high:.1f}°C' if pd.notna(high) else '자료 없음')
+        if len(tmp):
+            with st.expander('시간대별 예보 기온 보기'):
+                st.line_chart(tmp.rename('예보 기온(°C)'))
     except Exception:
         st.error('공식 예보를 불러오지 못했습니다. API 승인·인증 설정 또는 네트워크를 확인하세요. 인증키는 표시하지 않습니다.')
 else:
     st.info('운영자가 Streamlit Secrets에 KMA_FORECAST_KEY를 등록하면 공식 예보가 자동 표시됩니다.')
+st.subheader('🌦️ 지금 주의할 기상조건')
+alerts, available_categories = weather_risks(forecast)
+if forecast is None:
+    st.info('기상청 예보가 연결되면 현재 조건에 맞는 위험을 표시합니다.')
+else:
+    if alerts:
+        rank={'높음':0,'주의':1,'참고':2}
+        for name,level,description in sorted(alerts,key=lambda item:rank.get(item[1],3))[:3]:
+            if level=='높음':st.error(f'**{name}** · {description}')
+            elif level=='주의':st.warning(f'**{name}** · {description}')
+            else:st.info(f'**{name}** · {description}')
+        if len(alerts)>3:
+            with st.expander(f'기타 감지 항목 {len(alerts)-3}개'):
+                for name,level,description in alerts[3:]:st.write(f'**{name}** · {description}')
+    else:
+        st.success('제공된 예보 항목에서 설정 기준을 넘는 기상조건이 없습니다.')
+st.caption('이 결과는 기온·풍속·습도 등의 간단한 기준에 따른 참고 안내이며, 공식 폭염·한파·강풍·호우·건조특보가 아닙니다.')
 st.markdown('[기상청 공식 예보·특보 확인](https://www.weather.go.kr/)')
 
-st.header('2. AI 일주일 최고기온 예측 (오늘 포함 7일)')
+st.header('2. AI 7일 기온 전망 · 계절별 이상기온')
 st.caption('실험적 AI 예측: 최신 대구 ASOS 관측자료 + 과거 20년 데이터로 학습합니다. 7일 예측은 최신 실측자료를 기준으로 각 날짜를 독립적으로 추정하는 직접 다중시점 모델입니다. 예측값을 다음 날 입력으로 재사용하지 않습니다. 공식 기상청 예보는 아닙니다.')
 local=Path(__file__).parent/'data'/'asos_143.csv'
 data=None
@@ -159,6 +202,34 @@ else:
                 st.warning(f'과거 AI 비교 그래프를 표시하지 못했습니다: {type(graph_exc).__name__}')
         else:
             st.info('저장된 자동 학습 모델이 아직 없어 과거 AI 재현 그래프를 표시할 수 없습니다. 실제 관측 그래프는 계속 볼 수 있습니다.')
+        st.subheader('🌡️ 계절별 이상기온 감지 · 과거 관측값 비교')
+        st.caption('같은 시기(±7일)의 이전 연도 관측자료 분포와 비교합니다. 30년 기후평년값이나 공식 이상기후 판정이 아닙니다.')
+        recent_days=data[['tmax']].dropna().tail(30)
+        baseline=historical_baseline(data,recent_days.index)
+        if not baseline.empty:
+            baseline['실제 최고기온']=recent_days.tmax.to_numpy()
+            baseline['편차']=baseline['실제 최고기온']-baseline['과거 중앙값']
+            baseline['분류']=np.where(baseline['실제 최고기온']>baseline['상위 90% 기준'],'과거 대비 높은 기온',np.where(baseline['실제 최고기온']<baseline['하위 10% 기준'],'과거 대비 낮은 기온','일반 범위'))
+            st.plotly_chart(px.line(baseline,x='날짜',y=['실제 최고기온','과거 중앙값','상위 90% 기준','하위 10% 기준'],title='최근 30개 관측일의 최고기온과 과거 같은 시기 비교'),use_container_width=True)
+            st.dataframe(baseline[['날짜','실제 최고기온','과거 중앙값','편차','분류']].tail(12).sort_values('날짜',ascending=False),hide_index=True,use_container_width=True)
+        st.subheader('📊 연도별 극한기온 발생 일수')
+        extremes=historical_extremes(data)
+        counts=['33°C 이상 일수','30°C 이상 일수']
+        if '최저기온 관측일수' in extremes and extremes['최저기온 관측일수'].sum()>0:
+            counts+=['0°C 미만 일수','-12°C 이하 일수']
+        st.plotly_chart(px.line(extremes,x='연도',y=counts,markers=True,title='연도별 기온 기준 초과 일수'),use_container_width=True)
+        st.caption('관측일수가 부족한 해의 발생 일수는 실제보다 작을 수 있습니다. 최저기온 자료가 없는 경우 추위 관련 지표는 생략합니다.')
+        st.subheader('🔮 AI 7일 최고기온의 과거 대비 이상고온·이상저온 가능성')
+        st.caption('AI 최고기온 예측을 과거 같은 시기의 기온 분포와 비교한 참고 분석입니다. 별도의 이상기후 예측 AI는 아닙니다.')
+        try:
+            risk_week=predict_seven_days(result)
+            future_baseline=historical_baseline(data,pd.to_datetime(risk_week['날짜']))
+            if not future_baseline.empty:
+                future_baseline['AI 최고기온 예측']=pd.to_numeric(risk_week['AI 예상 최고기온(°C)'],errors='coerce').to_numpy()
+                future_baseline['비교 결과']=np.where(future_baseline['AI 최고기온 예측']>future_baseline['상위 90% 기준'],'과거 대비 고온 가능',np.where(future_baseline['AI 최고기온 예측']<future_baseline['하위 10% 기준'],'과거 대비 저온 가능','일반 범위'))
+                st.dataframe(future_baseline[['날짜','AI 최고기온 예측','과거 중앙값','비교 결과']],hide_index=True,use_container_width=True)
+        except (ValueError, KeyError, TypeError) as exc:
+            st.info(f'AI 이상기온 비교 준비 중: {type(exc).__name__}')
         st.subheader('AI 모델 검증 성능')
         st.caption('자동 학습 모델의 MAE는 2024~2025년 자료에 대한 1~11일 직접 예측 통합 검증값입니다. 개별 예측일의 정확도나 미래 성능을 보장하지 않습니다. 기존 모델 모드에서는 아래에 1일 예측 검증값이 표시됩니다.')
         if not result['metrics'].empty:
@@ -169,13 +240,37 @@ else:
             st.plotly_chart(px.line(view,x='date',y=['actual','pred'],title=f'{selected} 시간순 검증: 실제값 vs 예측값 (전체 검증기간)'),use_container_width=True)
         yearly=pd.DataFrame({'연도':data.index.year,'폭염일':(data.tmax>=33).fillna(False).astype(int).to_numpy()})
         yearly=yearly.groupby('연도',as_index=False)['폭염일'].sum().rename(columns={'폭염일':'33°C 이상 일수'})
-        st.plotly_chart(px.bar(yearly,x='연도',y='33°C 이상 일수',title='대구 ASOS 연도별 33°C 이상 일수'),use_container_width=True)
-        st.subheader('오늘부터 7일간 AI 최고기온 추정')
+        with st.expander('여름철 폭염일수 그래프 보기',expanded=season_focus(forecast)[0]=='고온'):
+            st.plotly_chart(px.bar(yearly,x='연도',y='33°C 이상 일수',title='대구 ASOS 연도별 33°C 이상 일수'),use_container_width=True)
+        st.subheader('AI 7일 기온 예측')
         try:
             week=predict_seven_days(result)
-            st.caption(f'최종 실측 날짜: {week.iloc[0]["관측 기반 마지막 날짜"]} · 예측 모델: {selected} · 단위: °C')
-            st.plotly_chart(px.line(week,x='날짜',y='AI 예상 최고기온(°C)',markers=True,title='AI 7일 최고기온 예측'),use_container_width=True)
-            st.dataframe(week[['날짜','AI 예상 최고기온(°C)']].style.format({'AI 예상 최고기온(°C)':'{:.1f}'}),hide_index=True,use_container_width=True)
+            st.caption(f'최종 최고기온 실측 날짜: {week.iloc[0]["관측 기반 마지막 날짜"]} · 직접 다중시점 AI 예측 · 단위: °C')
+            min_file=Path(__file__).parent/'artifacts'/'min_model.joblib'
+            min_meta=Path(__file__).parent/'artifacts'/'min_manifest.json'
+            min_ai=False
+            if min_file.exists() and min_meta.exists():
+                try:
+                    minimum=predict_minimum_seven_days(data,min_file)
+                    week=week.merge(minimum,on='날짜',how='left')
+                    min_ai=True
+                except (ValueError,KeyError) as exc:
+                    st.caption(f'AI 최저기온 예측 대기: {exc}')
+            focus=season_focus(forecast)[0]
+            primary='AI 예상 최저기온(°C)' if focus=='저온' and min_ai else 'AI 예상 최고기온(°C)'
+            if focus=='저온' and not min_ai:
+                st.caption('최저기온 AI 모델 학습 전입니다. 최고기온 AI 예측을 표시하며 최저기온은 위 기상청 공식 예보를 확인하세요.')
+            cols=['날짜',primary]
+            if min_ai:
+                secondary='AI 예상 최고기온(°C)' if primary=='AI 예상 최저기온(°C)' else 'AI 예상 최저기온(°C)'
+                cols.append(secondary)
+            st.plotly_chart(px.line(week,x='날짜',y=primary,markers=True,title='현재 기온 조건에 맞춘 AI 7일 예측'),use_container_width=True)
+            st.dataframe(week[cols].style.format({c:'{:.1f}' for c in cols if c!='날짜'}),hide_index=True,use_container_width=True)
+            if min_ai:
+                with st.expander('AI 모델 검증 성능'):
+                    meta=json.loads(min_meta.read_text(encoding='utf-8'))
+                    st.write(f'최저기온 모델: 2024~2025 검증 MAE {meta["validation_mae"]:.2f}°C')
+            st.download_button('AI 7일 예측 CSV 내려받기',week.to_csv(index=False).encode('utf-8-sig'),'ai_7day.csv','text/csv')
             st.info('AI 예측값을 다음 날 입력으로 재사용하지 않는 직접 예측 방식입니다. 다만 먼 날짜의 예측은 불확실성이 클 수 있으며 공식 폭염특보를 대신하지 않습니다.')
             st.download_button('AI 7일 예측 CSV 내려받기',week.to_csv(index=False).encode('utf-8-sig'),'ai_7day.csv','text/csv')
         except ValueError as exc:
@@ -240,19 +335,17 @@ if log_path.exists():
 else:
     st.info('아직 예측 기록이 없습니다. GitHub Actions → AI daily improvement → Run workflow를 실행하면 기록이 시작됩니다.')
 
-st.header('3. 폭염 위험 안내')
-st.caption('예보 온도를 이용한 참고용 안내이며 공식 폭염특보·온열질환 위험등급이 아닙니다.')
-if forecast is not None and 'TMP' in forecast:
-    future=forecast[forecast.index>=pd.Timestamp.now(tz='Asia/Seoul').tz_localize(None).floor('h')]
-    mx=future['TMP'].max() if len(future) else float('nan')
-    if pd.notna(mx):
-        if mx>=33: st.error('참고 안내: 예보에 33°C 이상 시간대가 있습니다. 야외활동을 줄이고 시원한 곳에서 휴식하세요.')
-        elif mx>=30: st.warning('참고 안내: 예보에 30°C 이상 시간대가 있습니다. 수분 섭취와 휴식에 신경 쓰세요.')
-        else: st.info('조회된 시간대 기온은 30°C 미만입니다. 날씨 변화와 공식 특보를 계속 확인하세요.')
-else: st.info('예보 데이터가 연결되면 온도 기반 참고 안내가 표시됩니다.')
-st.markdown('**건강 수칙:** 물 자주 마시기, 그늘이나 시원한 장소에서 쉬기, 더운 시간대 야외활동 줄이기. 의식 변화 등 위급한 상황에서는 119에 신고하세요.')
+st.header('3. 계절 맞춤 행동요령')
+focus,_,_=season_focus(forecast)
+if focus=='저온':
+    st.info('추위·결빙에 대비해 방한용품을 준비하고, 빙판길 보행에 주의하세요. 공식 한파특보를 확인하세요.')
+elif focus=='고온':
+    st.info('더운 시간대 야외활동을 줄이고, 수분 섭취와 시원한 장소에서의 휴식을 챙기세요. 공식 폭염특보를 확인하세요.')
+else:
+    st.info('일교차에 맞는 옷차림을 준비하고, 강수·강풍 예보와 기상청 특보를 확인하세요.')
+st.caption('계절 맞춤 안내는 기상조건에 따른 참고 정보이며 공식 기상특보가 아닙니다.')
 
-st.header('4. 무더위쉼터 지도 · 내 위치')
+st.header('4. 쉼터 지도 · 내 위치')
 st.caption('쉼터 정보는 행정안전부/지자체 공식 자료만 사용합니다. 지도에 보이는 위치와 실제 운영 여부는 다를 수 있으니 방문 전에 확인하세요.')
 st.markdown('[전국무더위쉼터표준데이터 (공공데이터포털)](https://www.data.go.kr/data/15013199/standard.do)')
 st.write('**내 위치 표시**: 버튼을 누르면 브라우저가 위치 권한을 요청합니다. 위치는 지도와 거리 계산에만 사용합니다.')
@@ -321,7 +414,7 @@ view=pdk.ViewState(latitude=center_lat,longitude=center_lon,zoom=12.5 if user_la
 st.pydeck_chart(pdk.Deck(map_style=None,initial_view_state=view,layers=layers,tooltip={'text':'{이름}\n{주소}\n{운영정보}'}),use_container_width=True)
 st.caption('주황색: 공식 자료의 무더위쉼터 / 파란색: 권한을 허용한 사용자의 현재 위치. 위치 정확도는 기기와 브라우저에 따라 달라집니다.')
 
-st.header('5. 폭염 시 행동요령')
+st.header('5. 사계절 위험기상 행동요령 (상세)')
 st.caption('일상에서 실천할 수 있는 폭염 대응 방법입니다. 실제 행동은 기상청 공식 특보와 현장 상황을 우선하세요.')
 with st.expander('☀️ 외출 전과 야외활동 중', expanded=True):
     st.markdown('''- 기상청 예보와 폭염특보를 확인하고, 무더운 시간대에는 야외활동을 가급적 줄이세요.
@@ -339,4 +432,8 @@ with st.expander('🚨 온열질환이 의심될 때'):
 - 의식 변화, 쓰러짐 등 심각한 증상이 있으면 즉시 **119**에 신고하세요.
 - 의식이 없거나 삼키기 어려운 사람에게는 억지로 물을 먹이지 마세요.''')
 st.markdown('[기상청 공식 폭염정보](https://www.weather.go.kr/) · [국민재난안전포털](https://www.safekorea.go.kr/)')
+with st.expander('❄️ 한파·결빙 대비'):
+    st.markdown('- 외출 시 보온에 신경 쓰고 장시간 추위 노출을 피하세요.\n- 수도관 동파와 빙판길 위험을 확인하세요.\n- 한파특보와 지역 대피·쉼터 안내는 공식 채널에서 확인하세요.')
+with st.expander('🌧️ 호우·강풍·건조 대비'):
+    st.markdown('- 호우 예보 시 하천변·지하차도 등 침수 위험 장소를 피하세요.\n- 강풍 예보 시 낙하물과 야외 시설물에 주의하세요.\n- 건조한 날에는 화재 예방 수칙을 지키세요.\n- 침수·산사태·산불의 실제 발생 여부는 이 앱의 기상자료만으로 예측할 수 없습니다.')
 st.caption('자료 출처: 기상청 공식 단기예보, 기상청 ASOS 일자료(연결 시). AI 성능 수치는 실제 자료로 검증된 경우에만 표시됩니다.')

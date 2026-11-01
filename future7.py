@@ -33,3 +33,30 @@ def predict_seven_days(result, today=None):
                      '관측 기반 마지막 날짜':last_actual.date(),
                      '예측 방식':f'관측자료 기반 {horizon}일 직접 예측'})
     return pd.DataFrame(rows)
+
+
+def predict_minimum_seven_days(data, model_file, today=None):
+    """Predict minimum temperature with a separate tmin-trained model."""
+    import joblib
+    from pathlib import Path
+    today=pd.Timestamp(today or pd.Timestamp.now(tz='Asia/Seoul').date()).normalize()
+    yesterday=today-pd.Timedelta(days=1)
+    historical=data.loc[:yesterday].copy()
+    if 'tmin' not in historical:
+        raise ValueError('최저기온 관측자료가 없습니다.')
+    last=historical.tmin.last_valid_index()
+    if last is None or (yesterday-last).days>4:
+        raise ValueError('최근 최저기온 관측자료가 부족합니다.')
+    cold=historical.copy();cold['tmax']=historical['tmin']
+    saved=joblib.load(Path(model_file));model=saved['model'];columns=saved['columns']
+    rows=[]
+    for target in pd.date_range(today,periods=7):
+        h=(target-last).days
+        if not 1<=h<=11:raise ValueError('최저기온 직접 예측 범위를 벗어났습니다.')
+        extended=cold.reindex(cold.index.union(pd.DatetimeIndex([last+pd.Timedelta(days=1)]))).sort_index()
+        x=direct_features(extended,h).loc[[last]].reindex(columns=columns)
+        if x.isna().any(axis=None):raise ValueError('최근 최저기온 관측자료에 결측이 있습니다.')
+        val=float(model.predict(x)[0])
+        if not -40<=val<=45:raise ValueError('AI 최저기온 예측값이 비정상적입니다.')
+        rows.append({'날짜':target,'AI 예상 최저기온(°C)':val})
+    return pd.DataFrame(rows)

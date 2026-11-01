@@ -7,6 +7,8 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error
 
 DATE_NAMES=['일시','날짜','date','Date','tm']
 TEMP_NAMES=['최고기온(°C)','최고기온(℃)','최고기온','maxTa','tmax']
+MIN_NAMES=['최저기온(°C)','최저기온(℃)','최저기온','minTa','tmin']
+RAIN_NAMES=['일강수량(mm)','일강수량','sumRn','rain']
 HUM_NAMES=['평균 상대습도(%)','평균상대습도(%)','평균 상대습도','avgRhm','humidity']
 
 def parse_csv(content):
@@ -25,12 +27,14 @@ def normalize(frames):
         if '지점' in f.columns:
             stations=pd.to_numeric(f['지점'],errors='coerce').dropna().unique()
             if len(stations) and any(s!=143 for s in stations): raise ValueError('대구(143) 관측소 자료만 입력하세요.')
-        h=get(HUM_NAMES)
-        parsed.append(pd.DataFrame({'date':pd.to_datetime(f[d],errors='coerce'), 'tmax':pd.to_numeric(f[t],errors='coerce'), 'humidity':pd.to_numeric(f[h],errors='coerce') if h else np.nan}))
+        h=get(HUM_NAMES); mn=get(MIN_NAMES); rn=get(RAIN_NAMES)
+        parsed.append(pd.DataFrame({'tmin':pd.to_numeric(f[mn],errors='coerce') if mn else np.nan, 'rain':pd.to_numeric(f[rn],errors='coerce') if rn else np.nan, 'date':pd.to_datetime(f[d],errors='coerce'), 'tmax':pd.to_numeric(f[t],errors='coerce'), 'humidity':pd.to_numeric(f[h],errors='coerce') if h else np.nan}))
     data=pd.concat(parsed).dropna(subset=['date']).sort_values('date').drop_duplicates('date',keep='last').set_index('date')
     data=data.loc['2006-01-01':].asfreq('D')
     data.loc[~data.tmax.between(-30,50),'tmax']=np.nan
     data.loc[~data.humidity.between(0,100),'humidity']=np.nan
+    data.loc[~data.tmin.between(-40,45),'tmin']=np.nan
+    data.loc[~data.rain.between(0,1000),'rain']=np.nan
     return data
 
 def features(data):
