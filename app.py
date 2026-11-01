@@ -136,3 +136,23 @@ try:
     st.download_button('AI 평가 결과 CSV 저장',result['metrics'].to_csv(index=False).encode('utf-8-sig'),'model_evaluation.csv','text/csv')
 except Exception as e:
     st.error(f'분석 오류: {e}')
+
+# 폭염 안전 행동 안내
+st.divider()
+st.header("🌡️ 폭염 안전 행동 안내")
+
+st.info(
+    "이 안내는 폭염 예방을 위한 일반 정보이며, "
+    "기상청 공식 폭염특보를 대체하지 않습니다."
+)
+
+st.markdown("""
+### 폭염 예방 수칙
+- 물을 자주 마시고 충분히 휴식하기
+- 한낮의 장시간 야외활동 줄이기
+- 그늘이나 냉방시설 이용하기
+- 고령자와 건강 취약계층의 상태 살피기
+
+### 응급상황 대응
+의식 변화 등 위급한 상황에서는 즉시 119에 신고하세요.
+""")
