@@ -87,7 +87,8 @@ def evaluate(data):
     selected='히스토그램 부스팅'
     model=new_model()
     model.fit(ds[x.columns],ds.target)
-    return {'data':data,'features':x,'dataset':ds,'evaluation':ev,
+    direct_model, direct_columns = train_direct_model(data)
+    return {'direct_model':direct_model,'direct_columns':direct_columns,'data':data,'features':x,'dataset':ds,'evaluation':ev,
             'metrics':metrics,'selected':selected,'model':model}
 
 def predict_next(result):
@@ -96,3 +97,30 @@ def predict_next(result):
     feat=features(extension).iloc[[-1]]
     if feat.isna().any(axis=None): return None
     return future_date,float(result['model'].predict(feat)[0])
+
+
+def direct_features(data, horizon):
+    """At issue date t, use observations no later than t; predict t+h."""
+    # features(data) for target t+1 uses observations up to issue date t.
+    base = features(data).shift(-1)
+    target_dates = data.index + pd.Timedelta(days=horizon)
+    base['target_day_sin'] = np.sin(2*np.pi*target_dates.dayofyear/365.25)
+    base['target_day_cos'] = np.cos(2*np.pi*target_dates.dayofyear/365.25)
+    base['horizon'] = float(horizon)
+    return base
+
+def train_direct_model(data):
+    """Single pooled direct multi-horizon model; never feeds predictions back as inputs."""
+    parts=[]
+    for h in range(1,12):
+        part=direct_features(data,h)
+        part['target']=data['tmax'].shift(-h)
+        parts.append(part.dropna())
+    train=pd.concat(parts,ignore_index=True)
+    if len(train)<365*5*7:
+        raise ValueError('직접 다중시점 예측을 학습할 자료가 부족합니다.')
+    columns=[c for c in train.columns if c!='target']
+    direct=HistGradientBoostingRegressor(max_iter=65,max_leaf_nodes=12,max_depth=5,
+             learning_rate=.08,l2_regularization=2,random_state=42,early_stopping=False)
+    direct.fit(train[columns],train['target'])
+    return direct,columns

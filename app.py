@@ -67,7 +67,7 @@ else:
 st.markdown('[기상청 공식 예보·특보 확인](https://www.weather.go.kr/)')
 
 st.header('2. AI 일주일 최고기온 예측 (오늘 포함 7일)')
-st.caption('실험적 AI 예측: 최신 대구 ASOS 관측자료 + 과거 20년 데이터로 학습합니다. 경량 히스토그램 부스팅과 단일 연도 시간순 검증을 사용합니다. 공식 예보가 아니며 7일 뒤로 갈수록 오차가 누적될 수 있습니다.')
+st.caption('실험적 AI 예측: 최신 대구 ASOS 관측자료 + 과거 20년 데이터로 학습합니다. 7일 예측은 최신 실측자료를 기준으로 각 날짜를 독립적으로 추정하는 직접 다중시점 모델입니다. 예측값을 다음 날 입력으로 재사용하지 않습니다. 공식 기상청 예보는 아닙니다.')
 local=Path(__file__).parent/'data'/'asos_143.csv'
 data=None
 source=None
@@ -108,7 +108,8 @@ else:
     st.success(f'ASOS 관측자료: {source} · {data.index.min().date()} ~ {data.index.max().date()}')
     try:
         result=cached_model(data)
-        st.subheader('시간순 검증 성능')
+        st.subheader('1일 예측 모델의 시간순 검증 성능')
+        st.caption('아래 검증 지표는 7일 직접 예측 모델의 검증 성능이 아닙니다.')
         st.dataframe(result['metrics'],hide_index=True,use_container_width=True)
         ev=result['evaluation'];selected=result['selected']
         view=ev[ev['model']==selected].tail(120)
@@ -122,7 +123,7 @@ else:
             st.caption(f'최종 실측 날짜: {week.iloc[0]["관측 기반 마지막 날짜"]} · 예측 모델: {selected} · 단위: °C')
             st.plotly_chart(px.line(week,x='날짜',y='AI 예상 최고기온(°C)',markers=True,title='AI 7일 최고기온 예측'),use_container_width=True)
             st.dataframe(week[['날짜','AI 예상 최고기온(°C)']].style.format({'AI 예상 최고기온(°C)':'{:.1f}'}),hide_index=True,use_container_width=True)
-            st.warning('이 모델은 매일의 AI 예측을 다음 날 입력값으로 다시 사용합니다. 예측이 멀어질수록 오차가 누적되며 공식 폭염특보의 근거로 사용할 수 없습니다.')
+            st.info('AI 예측값을 다음 날 입력으로 재사용하지 않는 직접 예측 방식입니다. 다만 먼 날짜의 예측은 불확실성이 클 수 있으며 공식 폭염특보를 대신하지 않습니다.')
             st.download_button('AI 7일 예측 CSV 내려받기',week.to_csv(index=False).encode('utf-8-sig'),'ai_7day.csv','text/csv')
         except ValueError as exc:
             st.error(str(exc))
