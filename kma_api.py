@@ -1,27 +1,87 @@
-"""Optional public-data API download; user provides own service key."""
+
 import requests
 import pandas as pd
-from datetime import date
 from model import normalize
 
-ENDPOINT='https://apis.data.go.kr/1360000/AsosDalyInfoService/getWthrDataList'
+API_URL = (
+    "https://apis.data.go.kr/1360000/"
+    "AsosDalyInfoService/getWthrDataList"
+)
 
-def fetch_asos(service_key, start='2006-01-01',end='2025-12-31', progress=None):
-    if not service_key.strip(): raise ValueError('공공데이터포털 API 인증키가 필요합니다.')
-    chunks=[]; dates=pd.date_range(start,end,freq='YS').tolist()
-    if pd.Timestamp(start).year not in [x.year for x in dates]: dates.insert(0,pd.Timestamp(start))
-    for i,begin in enumerate(dates):
-        year=begin.year
-        s=max(pd.Timestamp(start),pd.Timestamp(year,1,1))
-        e=min(pd.Timestamp(end),pd.Timestamp(year,12,31))
-        if s>e: continue
-        params={'ServiceKey':service_key,'pageNo':'1','numOfRows':'400','dataType':'JSON','dataCd':'ASOS','dateCd':'DAY','startDt':s.strftime('%Y%m%d'),'endDt':e.strftime('%Y%m%d'),'stnIds':'143'}
-        r=requests.get(ENDPOINT,params=params,timeout=35);r.raise_for_status()
-        try: body=r.json()['response']; items=body['body']['items']['item']
-        except Exception as ex: raise ValueError(f'{year}년 API 응답 오류: {r.text[:180]}') from ex
-        if isinstance(items,dict): items=[items]
-        if items: chunks.extend(items)
-        if progress: progress((i+1)/len(dates))
-    if not chunks: raise ValueError('API에서 관측자료를 받지 못했습니다.')
-    raw=pd.DataFrame(chunks)
-    return normalize([raw])
+def fetch_asos(
+    service_key,
+    start="2006-01-01",
+    end="2025-12-31",
+    progress=None
+):
+    if not service_key or not service_key.strip():
+        raise ValueError("ASOS API 인증키가 없습니다.")
+
+    start_date = pd.Timestamp(start)
+    end_date = pd.Timestamp(end)
+    records = []
+
+    years = list(range(
+        start_date.year,
+        end_date.year + 1
+    ))
+
+    for i, year in enumerate(years):
+        first = max(
+            start_date,
+            pd.Timestamp(year, 1, 1)
+        )
+        last = min(
+            end_date,
+            pd.Timestamp(year, 12, 31)
+        )
+
+        if first > last:
+            continue
+
+        params = {
+            "ServiceKey": service_key,
+            "pageNo": 1,
+            "numOfRows": 400,
+            "dataType": "JSON",
+            "dataCd": "ASOS",
+            "dateCd": "DAY",
+            "startDt": first.strftime("%Y%m%d"),
+            "endDt": last.strftime("%Y%m%d"),
+            "stnIds": "143"
+        }
+
+        response = requests.get(
+            API_URL,
+            params=params,
+            timeout=40
+        )
+        response.raise_for_status()
+
+        result = response.json().get("response", {})
+        header = result.get("header", {})
+
+        if header.get("resultCode") != "00":
+            raise ValueError(
+                "ASOS API 응답 오류: "
+                + str(header.get("resultMsg", "알 수 없음"))
+            )
+
+        body = result.get("body", {})
+        items = body.get("items", {}) or {}
+        rows = items.get("item", [])
+
+        if isinstance(rows, dict):
+            rows = [rows]
+
+        records.extend(rows)
+
+        if progress:
+            progress((i + 1) / len(years))
+
+    if not records:
+        raise ValueError("관측자료가 없습니다.")
+
+    data = pd.DataFrame(records)
+
+    return normalize([data])
