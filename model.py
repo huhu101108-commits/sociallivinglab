@@ -2,7 +2,7 @@
 import io
 import numpy as np
 import pandas as pd
-from sklearn.ensemble import HistGradientBoostingRegressor, RandomForestRegressor
+from sklearn.ensemble import HistGradientBoostingRegressor
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 
 DATE_NAMES=['일시','날짜','date','Date','tm']
@@ -53,33 +53,42 @@ def evaluate(data):
     if len(data)<365*6 or data.tmax.notna().mean()<.90: raise ValueError('최소 6년, 일 최고기온 관측률 90% 이상이 필요합니다.')
     x=features(data); ds=x.assign(target=data.tmax).dropna()
     if len(ds)<365*5: raise ValueError('학습에 사용할 연속 자료가 부족합니다.')
+    # Single chronological holdout: avoid fitting six large ensembles on every cold start.
+    # The last complete calendar year is held out; then one final model is fitted.
     years=sorted(ds.index.year.unique())
-    test_years=years[-3:]
-    splits=[]; models={
-        '랜덤포레스트':lambda:RandomForestRegressor(n_estimators=180,max_features=.8,min_samples_leaf=5,n_jobs=-1,random_state=42),
-        '히스토그램 부스팅':lambda:HistGradientBoostingRegressor(max_iter=160,max_leaf_nodes=15,l2_regularization=2,learning_rate=.06,random_state=42),
-    }
-    for yr in test_years:
-        train=ds[ds.index.year<yr]; test=ds[ds.index.year==yr]
-        if len(train)<365*3 or len(test)<200: continue
-        for name,fn in models.items():
-            m=fn(); m.fit(train[x.columns],train.target)
-            p=m.predict(test[x.columns]); splits.append(pd.DataFrame({'date':test.index,'actual':test.target.to_numpy(),'pred':p,'model':name,'year':yr}))
-        # Seasonal persistence baseline: yesterday's high.
-        splits.append(pd.DataFrame({'date':test.index,'actual':test.target.to_numpy(),'pred':test.tmax_lag1.to_numpy(),'model':'전날 기온 기준','year':yr}))
-    if not splits: raise ValueError('시간순 평가 자료가 부족합니다.')
-    ev=pd.concat(splits,ignore_index=True)
+    test_year=years[-2] if len(ds[ds.index.year==years[-1]])<300 else years[-1]
+    train=ds[ds.index.year<test_year]
+    test=ds[ds.index.year==test_year]
+    if len(train)<365*3 or len(test)<200:
+        raise ValueError('시간순 검증 자료가 부족합니다.')
+    def new_model():
+        return HistGradientBoostingRegressor(max_iter=70,max_leaf_nodes=12,
+                    max_depth=5,l2_regularization=2,learning_rate=.08,random_state=42,
+                    early_stopping=False)
+    candidate=new_model()
+    candidate.fit(train[x.columns],train.target)
+    predictions=candidate.predict(test[x.columns])
+    ev=pd.concat([
+        pd.DataFrame({'date':test.index,'actual':test.target.to_numpy(),
+                      'pred':predictions,'model':'히스토그램 부스팅','year':test_year}),
+        pd.DataFrame({'date':test.index,'actual':test.target.to_numpy(),
+                      'pred':test.tmax_lag1.to_numpy(),'model':'전날 기온 기준','year':test_year})
+    ],ignore_index=True)
     summary=[]
     for name,g in ev.groupby('model'):
         obs=g.actual.to_numpy(); pred=g.pred.to_numpy()
         real_hot=obs>=33; forecast_hot=pred>=33
         tp=(real_hot&forecast_hot).sum(); fp=(~real_hot&forecast_hot).sum(); fn=(real_hot&~forecast_hot).sum()
-        summary.append({'모델':name,'MAE(°C)':round(mean_absolute_error(obs,pred),2),'RMSE(°C)':round(np.sqrt(mean_squared_error(obs,pred)),2),'폭염 재현율':round(tp/(tp+fn),3) if tp+fn else np.nan,'폭염 정밀도':round(tp/(tp+fp),3) if tp+fp else np.nan})
+        summary.append({'모델':name,'MAE(°C)':round(mean_absolute_error(obs,pred),2),
+                        'RMSE(°C)':round(np.sqrt(mean_squared_error(obs,pred)),2),
+                        '폭염 재현율':round(tp/(tp+fn),3) if tp+fn else np.nan,
+                        '폭염 정밀도':round(tp/(tp+fp),3) if tp+fp else np.nan})
     metrics=pd.DataFrame(summary).sort_values('MAE(°C)')
-    choices=metrics[metrics['모델']!='전날 기온 기준']
-    selected=choices.iloc[0]['모델']
-    model=models[selected](); model.fit(ds[x.columns],ds.target)
-    return {'data':data,'features':x,'dataset':ds,'evaluation':ev,'metrics':metrics,'selected':selected,'model':model}
+    selected='히스토그램 부스팅'
+    model=new_model()
+    model.fit(ds[x.columns],ds.target)
+    return {'data':data,'features':x,'dataset':ds,'evaluation':ev,
+            'metrics':metrics,'selected':selected,'model':model}
 
 def predict_next(result):
     data=result['data']; future_date=data.index.max()+pd.Timedelta(days=1)
