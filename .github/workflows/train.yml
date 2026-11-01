@@ -1,8 +1,9 @@
+
 name: AI daily improvement
 
 on:
   schedule:
-    - cron: '20 22 * * *'  # 07:20 KST every day (UTC 22:20 previous day)
+    - cron: '20 22 * * *'  # 매일 오전 7시 20분 (한국 시간)
   workflow_dispatch:
 
 permissions:
@@ -16,6 +17,7 @@ jobs:
   train:
     runs-on: ubuntu-latest
     timeout-minutes: 50
+
     steps:
       - uses: actions/checkout@v4
 
@@ -24,7 +26,8 @@ jobs:
           python-version: '3.11'
           cache: pip
 
-      - run: pip install -r requirements.txt
+      - name: Install dependencies
+        run: pip install -r requirements.txt
 
       - name: Train and validate
         env:
@@ -38,7 +41,10 @@ jobs:
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+
           git add artifacts/direct_model.joblib artifacts/manifest.json data/asos_143.csv data/prediction_history.csv
+          git add -f artifacts/min_model.joblib artifacts/min_manifest.json 2>/dev/null || true
+
           if ! git diff --cached --quiet; then
             git commit -m 'Update ASOS data and validated AI model'
             git push
