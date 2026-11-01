@@ -1,5 +1,7 @@
 """칠성동 AI 폭염 안전지킴이: official forecast + validated research ML."""
 from pathlib import Path
+import json
+import joblib
 from datetime import date, timedelta
 import pydeck as pdk
 from streamlit_geolocation import streamlit_geolocation
@@ -27,8 +29,17 @@ def cached_forecast(key): return fetch_forecast(key)
 @st.cache_data(show_spinner='기상 관측자료를 정리하고 있습니다…')
 def cached_csv(content): return normalize([parse_csv(content)])
 
-@st.cache_resource(show_spinner='최초 실행 시 경량 AI 모델을 학습하고 있습니다…')
-def cached_model(df): return evaluate(df)
+@st.cache_resource(show_spinner='AI 모델을 준비하고 있습니다…')
+def cached_model(df, model_version):
+    result = evaluate(df) if not model_version else {'data': df}
+    if model_version:
+        stored = joblib.load(Path(__file__).parent/'artifacts'/'direct_model.joblib')
+        result['direct_model'] = stored['model']
+        result['direct_columns'] = stored['columns']
+        result['metrics'] = pd.DataFrame()
+        result['evaluation'] = pd.DataFrame()
+        result['selected'] = '자동 검증 후 배포된 AI 모델'
+    return result
 
 @st.cache_data(ttl=86400,show_spinner='기상청 ASOS 20년 관측자료를 수집하고 있습니다…')
 def cached_asos(key): return fetch_asos(key,start='2006-01-01',end='2025-12-31')
@@ -107,13 +118,19 @@ if data is None:
 else:
     st.success(f'ASOS 관측자료: {source} · {data.index.min().date()} ~ {data.index.max().date()}')
     try:
-        result=cached_model(data)
-        st.subheader('1일 예측 모델의 시간순 검증 성능')
-        st.caption('아래 검증 지표는 1일 예측 모델의 성능이며, 7일 직접 예측 모델의 정확도를 보장하지 않습니다. 추가 특성은 성능 개선을 목표로 도입했으며 실제 개선 여부는 별도 시간순 검증이 필요합니다.')
-        st.dataframe(result['metrics'],hide_index=True,use_container_width=True)
+        manifest_path=Path(__file__).parent/'artifacts'/'manifest.json'
+        manifest=json.loads(manifest_path.read_text(encoding='utf-8')) if manifest_path.exists() else None
+        result=cached_model(data, manifest.get('trained_at') if manifest else None)
+        if manifest:
+            st.success(f"자동 학습 모델: {manifest['trained_at']} 갱신 · 2024~2025 검증 MAE {manifest['validation_mae']:.2f}°C")
+        st.subheader('AI 모델 검증 성능')
+        st.caption('자동 학습 모델의 MAE는 2024~2025년 자료에 대한 1~11일 직접 예측 통합 검증값입니다. 개별 예측일의 정확도나 미래 성능을 보장하지 않습니다. 기존 모델 모드에서는 아래에 1일 예측 검증값이 표시됩니다.')
+        if not result['metrics'].empty:
+            st.dataframe(result['metrics'],hide_index=True,use_container_width=True)
         ev=result['evaluation'];selected=result['selected']
-        view=ev[ev['model']==selected].tail(120)
-        st.plotly_chart(px.line(view,x='date',y=['actual','pred'],title=f'{selected} 실제값 vs 예측값'),use_container_width=True)
+        if not ev.empty:
+            view=ev[ev['model']==selected].tail(120)
+            st.plotly_chart(px.line(view,x='date',y=['actual','pred'],title=f'{selected} 실제값 vs 예측값'),use_container_width=True)
         yearly=pd.DataFrame({'연도':data.index.year,'폭염일':(data.tmax>=33).fillna(False).astype(int).to_numpy()})
         yearly=yearly.groupby('연도',as_index=False)['폭염일'].sum().rename(columns={'폭염일':'33°C 이상 일수'})
         st.plotly_chart(px.bar(yearly,x='연도',y='33°C 이상 일수',title='대구 ASOS 연도별 33°C 이상 일수'),use_container_width=True)
@@ -127,9 +144,65 @@ else:
             st.download_button('AI 7일 예측 CSV 내려받기',week.to_csv(index=False).encode('utf-8-sig'),'ai_7day.csv','text/csv')
         except ValueError as exc:
             st.error(str(exc))
-        st.download_button('AI 검증 지표 CSV 내려받기',result['metrics'].to_csv(index=False).encode('utf-8-sig'),'ai_validation.csv','text/csv')
+        if not result['metrics'].empty:
+            st.download_button('AI 검증 지표 CSV 내려받기',result['metrics'].to_csv(index=False).encode('utf-8-sig'),'ai_validation.csv','text/csv')
     except Exception as exc:
         st.error(f'AI 학습/검증 오류: {type(exc).__name__}. 관측자료 누락 및 model.py 버전을 확인하세요.')
+
+st.subheader('📅 날짜별 AI 예측과 실제 기온 비교')
+st.caption('매일 저장한 예측을 나중에 발표된 대구 ASOS 143 관측값과 비교합니다. 관측소 기온은 칠성동 개별 지점의 실측값이 아닙니다.')
+log_path=Path(__file__).parent/'data'/'prediction_history.csv'
+if log_path.exists():
+    try:
+        history=pd.read_csv(log_path,encoding='utf-8-sig')
+        required={'issued_at','target_date','horizon','predicted_tmax','actual_tmax'}
+        if not required.issubset(history.columns):
+            st.warning('예측 기록의 필수 열이 누락되었습니다. daily_monitor.py 실행 기록을 확인하세요.')
+        elif history.empty:
+            st.info('아직 저장된 예측이 없습니다. GitHub Actions의 첫 실행을 기다려 주세요.')
+        else:
+            history['target_date']=pd.to_datetime(history['target_date'],errors='coerce')
+            history['issued_at']=pd.to_datetime(history['issued_at'],errors='coerce',utc=True)
+            for c in ['horizon','predicted_tmax','actual_tmax']:
+                history[c]=pd.to_numeric(history[c],errors='coerce')
+            history=history.dropna(subset=['target_date','issued_at','horizon','predicted_tmax']).copy()
+            history['horizon']=history['horizon'].astype(int)
+            history['absolute_error']=(history['predicted_tmax']-history['actual_tmax']).abs()
+            horizon=st.selectbox('몇 일 전에 예측한 결과를 볼까요?',list(range(1,8)),format_func=lambda n:f'{n}일 전 예측',index=0,key='history_horizon')
+            selected=history[history['horizon']==horizon].sort_values(['target_date','issued_at']).drop_duplicates('target_date',keep='first').sort_values('target_date',ascending=False).copy()
+            if selected.empty:
+                st.info('선택한 예측일차의 기록이 아직 없습니다.')
+            else:
+                scored=selected.dropna(subset=['actual_tmax','absolute_error'])
+                col1,col2,col3=st.columns(3)
+                col1.metric('비교 완료',f'{len(scored)}일')
+                col2.metric('평균 절대오차 (MAE)',f"{scored['absolute_error'].mean():.2f}°C" if len(scored) else '계산 대기')
+                col3.metric('관측 대기',f'{len(selected)-len(scored)}일')
+                table=selected[['target_date','predicted_tmax','actual_tmax','absolute_error']].copy()
+                table['상태']=table['actual_tmax'].apply(lambda v:'관측 대기' if pd.isna(v) else '비교 완료')
+                table['target_date']=table['target_date'].dt.strftime('%Y-%m-%d')
+                table.columns=['날짜','AI 예측 (°C)','실제 최고기온 (°C)','오차 (°C)','상태']
+                st.dataframe(table,hide_index=True,use_container_width=True,
+                    column_config={
+                        'AI 예측 (°C)':st.column_config.NumberColumn(format='%.1f'),
+                        '실제 최고기온 (°C)':st.column_config.NumberColumn(format='%.1f'),
+                        '오차 (°C)':st.column_config.NumberColumn(format='%.2f'),
+                    })
+                if len(scored):
+                    st.markdown('**날짜별 예측 오차 추이**')
+                    trend=scored.sort_values('target_date').set_index('target_date')['absolute_error']
+                    st.line_chart(trend,y_label='절대오차 (°C)',x_label='실제 기온 날짜')
+                    st.markdown('**AI 예측 기온과 실제 기온 비교**')
+                    comparison=scored.sort_values('target_date').set_index('target_date')[['predicted_tmax','actual_tmax']]
+                    comparison.columns=['AI 예측 최고기온','실제 최고기온']
+                    st.line_chart(comparison,y_label='최고기온 (°C)',x_label='날짜')
+                st.download_button('날짜별 예측·관측 비교 CSV 다운로드',table.to_csv(index=False).encode('utf-8-sig'),
+                    file_name=f'forecast_vs_actual_{horizon}day.csv',mime='text/csv')
+            st.caption(f'전체 예측 기록 {len(history)}건 · 관측자료가 갱신되면 매일 자동 비교됩니다. 실제 관측이 없는 날짜는 오차 계산에서 제외됩니다.')
+    except Exception as exc:
+        st.warning(f'예측 기록을 읽지 못했습니다: {type(exc).__name__}')
+else:
+    st.info('아직 예측 기록이 없습니다. GitHub Actions → AI daily improvement → Run workflow를 실행하면 기록이 시작됩니다.')
 
 st.header('3. 폭염 위험 안내')
 st.caption('예보 온도를 이용한 참고용 안내이며 공식 폭염특보·온열질환 위험등급이 아닙니다.')

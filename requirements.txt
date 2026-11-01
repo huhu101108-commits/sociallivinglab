@@ -6,3 +6,4 @@ plotly>=5.20
 requests>=2.31
 pydeck>=0.8
 streamlit-geolocation==0.0.10
+joblib>=1.3
