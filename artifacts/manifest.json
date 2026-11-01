@@ -1,0 +1,17 @@
+{
+  "trained_at": "2026-11-01",
+  "validation_mae": 3.0806,
+  "validation_period": "2024-01-01 ~ 2025-12-31",
+  "training_end": "2026-10-30",
+  "parameters": [
+    110,
+    12,
+    5
+  ],
+  "validation_rows": 7722,
+  "candidate_mae": [
+    3.0806,
+    3.0912,
+    3.1077
+  ]
+}
