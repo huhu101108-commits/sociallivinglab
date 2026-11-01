@@ -1,3 +1,4 @@
+
 """칠성동 AI 폭염 안전지킴이: official forecast + validated research ML."""
 from pathlib import Path
 import json
@@ -10,7 +11,7 @@ from shelters import parse_shelters, distances_km
 import pandas as pd
 import streamlit as st
 import plotly.express as px
-from model import parse_csv, normalize, evaluate, predict_next
+from model import parse_csv, normalize, evaluate, predict_next, direct_features
 from kma_api import fetch_asos
 from forecast import fetch_forecast
 
@@ -47,6 +48,20 @@ def cached_asos(key): return fetch_asos(key,start='2006-01-01',end='2025-12-31')
 @st.cache_data(ttl=21600,show_spinner='올해 최신 ASOS 관측자료를 조회하고 있습니다…')
 def cached_recent_asos(key,year,end):
     return fetch_asos(key,start=f'{year}-01-01',end=end)
+
+@st.cache_data(show_spinner='과거 20년 AI 비교 그래프를 계산하고 있습니다…')
+def historical_model_comparison(data, model_path, model_mtime):
+    # Historical predictions from the deployed model are IN-SAMPLE fits, not past forecasts.
+    stored=joblib.load(model_path)
+    x=direct_features(data, 1)
+    cols=stored['columns']
+    valid=x[cols].notna().all(axis=1) & data['tmax'].shift(-1).notna()
+    if not valid.any():
+        return pd.DataFrame(columns=['날짜','실제 최고기온','AI 과거 재현값'])
+    pred=stored['model'].predict(x.loc[valid,cols])
+    dates=x.index[valid]+pd.Timedelta(days=1)
+    actual=data['tmax'].shift(-1).loc[valid].to_numpy()
+    return pd.DataFrame({'날짜':dates,'실제 최고기온':actual,'AI 과거 재현값':pred})
 
 st.header('1. 기상청 공식 단기예보')
 key=secret('KMA_FORECAST_KEY')
@@ -123,14 +138,35 @@ else:
         result=cached_model(data, manifest.get('trained_at') if manifest else None)
         if manifest:
             st.success(f"자동 학습 모델: {manifest['trained_at']} 갱신 · 2024~2025 검증 MAE {manifest['validation_mae']:.2f}°C")
+        st.subheader('📈 과거 약 20년 최고기온 · AI 비교')
+        observed=data[['tmax']].dropna().reset_index()
+        observed.columns=['날짜','실제 최고기온']
+        observed['날짜']=pd.to_datetime(observed['날짜'])
+        st.caption('2006년 이후 대구 ASOS 143 관측소의 실제 일 최고기온입니다. 날짜 범위를 선택해 확대할 수 있습니다.')
+        years=sorted(observed['날짜'].dt.year.unique().tolist())
+        chosen_years=st.slider('관측 연도 범위',min_value=years[0],max_value=years[-1],value=(years[0],years[-1]),key='historical_years')
+        obs_view=observed[observed['날짜'].dt.year.between(*chosen_years)]
+        st.plotly_chart(px.line(obs_view,x='날짜',y='실제 최고기온',title='2006년 이후 실제 최고기온 변화'),use_container_width=True)
+        model_file=Path(__file__).parent/'artifacts'/'direct_model.joblib'
+        if model_file.exists() and manifest:
+            try:
+                history_fit=historical_model_comparison(data,model_file,model_file.stat().st_mtime_ns)
+                history_fit=history_fit[history_fit['날짜'].dt.year.between(*chosen_years)]
+                if not history_fit.empty:
+                    st.plotly_chart(px.line(history_fit,x='날짜',y=['실제 최고기온','AI 과거 재현값'],title='과거 실제 기온 vs AI 재현값 (전체 기간)'),use_container_width=True)
+                    st.caption('주의: AI 과거 재현값은 과거 전체 자료로 학습한 현재 모델을 과거 날짜에 다시 적용한 결과입니다. 당시 실제로 발표한 미래 예측이 아니며, 미래 예측 정확도 증거로 사용할 수 없습니다. 실제 미래 예측 정확도는 아래 날짜별 기록에서 확인하세요.')
+            except Exception as graph_exc:
+                st.warning(f'과거 AI 비교 그래프를 표시하지 못했습니다: {type(graph_exc).__name__}')
+        else:
+            st.info('저장된 자동 학습 모델이 아직 없어 과거 AI 재현 그래프를 표시할 수 없습니다. 실제 관측 그래프는 계속 볼 수 있습니다.')
         st.subheader('AI 모델 검증 성능')
         st.caption('자동 학습 모델의 MAE는 2024~2025년 자료에 대한 1~11일 직접 예측 통합 검증값입니다. 개별 예측일의 정확도나 미래 성능을 보장하지 않습니다. 기존 모델 모드에서는 아래에 1일 예측 검증값이 표시됩니다.')
         if not result['metrics'].empty:
             st.dataframe(result['metrics'],hide_index=True,use_container_width=True)
         ev=result['evaluation'];selected=result['selected']
         if not ev.empty:
-            view=ev[ev['model']==selected].tail(120)
-            st.plotly_chart(px.line(view,x='date',y=['actual','pred'],title=f'{selected} 실제값 vs 예측값'),use_container_width=True)
+            view=ev[ev['model']==selected].copy()
+            st.plotly_chart(px.line(view,x='date',y=['actual','pred'],title=f'{selected} 시간순 검증: 실제값 vs 예측값 (전체 검증기간)'),use_container_width=True)
         yearly=pd.DataFrame({'연도':data.index.year,'폭염일':(data.tmax>=33).fillna(False).astype(int).to_numpy()})
         yearly=yearly.groupby('연도',as_index=False)['폭염일'].sum().rename(columns={'폭염일':'33°C 이상 일수'})
         st.plotly_chart(px.bar(yearly,x='연도',y='33°C 이상 일수',title='대구 ASOS 연도별 33°C 이상 일수'),use_container_width=True)
