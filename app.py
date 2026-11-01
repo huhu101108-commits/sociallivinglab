@@ -14,7 +14,7 @@ from forecast import fetch_forecast
 
 st.set_page_config(page_title='칠성동 AI 폭염 안전지킴이',page_icon='☀️',layout='wide')
 st.title('☀️ 칠성동 AI 폭염 안전지킴이')
-st.caption('대구 북구 칠성동 · 공식 기상예보 자동 조회 + 2006~2025년 대구 ASOS 관측자료 기반 AI 연구')
+st.caption('대구 북구 칠성동 · 공식 기상예보 자동 조회 + 2006년 이후 대구 ASOS 관측자료 기반 AI 연구')
 st.warning('대구 ASOS 관측소 자료와 기상청 예보 격자는 칠성동 개별 주소의 실측값이 아닙니다. 공식 특보·의료 판단을 대체하지 않습니다.')
 
 def secret(name):
@@ -109,7 +109,7 @@ else:
     try:
         result=cached_model(data)
         st.subheader('1일 예측 모델의 시간순 검증 성능')
-        st.caption('아래 검증 지표는 7일 직접 예측 모델의 검증 성능이 아닙니다.')
+        st.caption('아래 검증 지표는 1일 예측 모델의 성능이며, 7일 직접 예측 모델의 정확도를 보장하지 않습니다. 추가 특성은 성능 개선을 목표로 도입했으며 실제 개선 여부는 별도 시간순 검증이 필요합니다.')
         st.dataframe(result['metrics'],hide_index=True,use_container_width=True)
         ev=result['evaluation'];selected=result['selected']
         view=ev[ev['model']==selected].tail(120)
@@ -212,6 +212,22 @@ view=pdk.ViewState(latitude=center_lat,longitude=center_lon,zoom=12.5 if user_la
 st.pydeck_chart(pdk.Deck(map_style=None,initial_view_state=view,layers=layers,tooltip={'text':'{이름}\n{주소}\n{운영정보}'}),use_container_width=True)
 st.caption('주황색: 공식 자료의 무더위쉼터 / 파란색: 권한을 허용한 사용자의 현재 위치. 위치 정확도는 기기와 브라우저에 따라 달라집니다.')
 
-st.header('5. 지역사회 정책 제안')
-st.markdown('고령자·거동불편자의 쉼터 접근성을 조사하고, 폭염 시 방문 돌봄과 이동 지원을 검토할 수 있습니다. 세부 동네 위험지도는 별도의 공간·인구·현장 관측자료를 확보한 뒤 제작해야 합니다.')
+st.header('5. 폭염 시 행동요령')
+st.caption('일상에서 실천할 수 있는 폭염 대응 방법입니다. 실제 행동은 기상청 공식 특보와 현장 상황을 우선하세요.')
+with st.expander('☀️ 외출 전과 야외활동 중', expanded=True):
+    st.markdown('''- 기상청 예보와 폭염특보를 확인하고, 무더운 시간대에는 야외활동을 가급적 줄이세요.
+- 가볍고 통풍이 잘되는 옷을 입고, 모자나 양산을 활용하세요.
+- 목이 마르지 않아도 물을 조금씩 자주 마시세요. 단, 수분 섭취를 제한하라는 의료진의 지시가 있다면 그 지시를 따르세요.
+- 어지럽거나 몸이 불편해지면 즉시 활동을 중단하고 시원한 곳에서 쉬세요.''')
+with st.expander('🏠 실내와 무더위쉼터 이용'):
+    st.markdown('''- 냉방기기나 선풍기를 적절히 사용하고 실내 온도를 확인하세요.
+- 실내가 지나치게 덥다면 가까운 무더위쉼터 등 시원한 장소로 이동하세요.
+- 지도에 표시된 쉼터는 방문 전에 운영시간과 이용 가능 여부를 확인하세요.
+- 혼자 지내는 이웃이나 고령자의 안부를 확인하고, 필요하면 주변에 도움을 요청하세요.''')
+with st.expander('🚨 온열질환이 의심될 때'):
+    st.markdown('''- 즉시 활동을 멈추고 시원한 곳으로 이동하여 몸을 식히세요.
+- 의식이 또렷하고 삼킬 수 있을 때만 물을 마시도록 하세요.
+- 의식 변화, 쓰러짐 등 심각한 증상이 있으면 즉시 **119**에 신고하세요.
+- 의식이 없거나 삼키기 어려운 사람에게는 억지로 물을 먹이지 마세요.''')
+st.markdown('[기상청 공식 폭염정보](https://www.weather.go.kr/) · [국민재난안전포털](https://www.safekorea.go.kr/)')
 st.caption('자료 출처: 기상청 공식 단기예보, 기상청 ASOS 일자료(연결 시). AI 성능 수치는 실제 자료로 검증된 경우에만 표시됩니다.')

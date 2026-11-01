@@ -36,10 +36,18 @@ def normalize(frames):
 def features(data):
     t=data.tmax
     x=pd.DataFrame(index=data.index)
-    for k in (1,2,3,7,14,28): x[f'tmax_lag{k}']=t.shift(k)
+    for k in (1,2,3,4,5,7,14,21,28): x[f'tmax_lag{k}']=t.shift(k)
     for w in (3,7,14,28):
         x[f'tmax_mean{w}']=t.shift(1).rolling(w,min_periods=w).mean()
         x[f'tmax_std{w}']=t.shift(1).rolling(w,min_periods=w).std()
+    # Recent extremes and warming/cooling trend, using observations strictly before target day.
+    for w in (3,7,14):
+        x[f'tmax_min{w}']=t.shift(1).rolling(w,min_periods=w).min()
+        x[f'tmax_max{w}']=t.shift(1).rolling(w,min_periods=w).max()
+    x['trend_3_14']=x['tmax_mean3']-x['tmax_mean14']
+    x['trend_7_28']=x['tmax_mean7']-x['tmax_mean28']
+    x['day_sin2']=np.sin(4*np.pi*x.index.dayofyear/365.25)
+    x['day_cos2']=np.cos(4*np.pi*x.index.dayofyear/365.25)
     x['day_sin']=np.sin(2*np.pi*x.index.dayofyear/365.25)
     x['day_cos']=np.cos(2*np.pi*x.index.dayofyear/365.25)
     x['year']=x.index.year
@@ -120,7 +128,7 @@ def train_direct_model(data):
     if len(train)<365*5*7:
         raise ValueError('직접 다중시점 예측을 학습할 자료가 부족합니다.')
     columns=[c for c in train.columns if c!='target']
-    direct=HistGradientBoostingRegressor(max_iter=65,max_leaf_nodes=12,max_depth=5,
-             learning_rate=.08,l2_regularization=2,random_state=42,early_stopping=False)
+    direct=HistGradientBoostingRegressor(max_iter=85,max_leaf_nodes=15,max_depth=5,
+             learning_rate=.065,l2_regularization=3,random_state=42,early_stopping=False)
     direct.fit(train[columns],train['target'])
     return direct,columns
