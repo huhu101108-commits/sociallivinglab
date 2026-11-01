@@ -156,3 +156,53 @@ st.markdown("""
 ### 응급상황 대응
 의식 변화 등 위급한 상황에서는 즉시 119에 신고하세요.
 """)
+
+# =====================================
+# AI 폭염 예측 및 학습
+# =====================================
+
+st.divider()
+st.header("🤖 AI 폭염 예측 시스템")
+
+st.write(
+    "2006~2025년 대구 기상 관측자료를 "
+    "학습하여 다음 날 최고기온을 예측합니다."
+)
+
+try:
+    asos_key = st.secrets.get(
+        "ASOS_SERVICE_KEY", ""
+    )
+except Exception:
+    asos_key = ""
+
+if not asos_key:
+    st.warning(
+        "AI 학습을 시작하려면 Streamlit Secrets에 "
+        "ASOS_SERVICE_KEY를 등록해야 합니다."
+    )
+else:
+    if st.button("🚀 AI 학습 시작"):
+        try:
+            from kma_api import fetch_asos
+
+            with st.spinner(
+                "20년 기상자료를 수집하고 AI를 학습하는 중..."
+            ):
+                data = fetch_asos(
+                    asos_key,
+                    start="2006-01-01",
+                    end="2025-12-31"
+                )
+                result = evaluate(data)
+
+            st.success("AI 학습 완료!")
+
+            st.write("AI 모델 검증 결과")
+            st.write(result)
+
+        except Exception:
+            st.error(
+                "기상자료 수집 또는 AI 학습에 실패했습니다. "
+                "API 승인 상태와 데이터 형식을 확인해 주세요."
+            )
