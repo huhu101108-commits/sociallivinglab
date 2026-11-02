@@ -20,6 +20,7 @@ from kma_api import fetch_asos
 from forecast import fetch_forecast
 from nationwide_weather import REGIONS, nationwide_forecast, rain_summary, climate_rain_analysis
 from nationwide_ml import STATIONS, fetch_station_observations, train_and_predict, climate_periods
+from nationwide_7day import seven_day_models, daily_rain_extremes
 from climate_risks import weather_risks, historical_baseline, historical_extremes
 
 st.set_page_config(page_title='칠성동 AI 기후 안전지킴이',page_icon='🌦️',layout='wide')
@@ -138,6 +139,25 @@ with tab_weather:
             if not holdout.empty:
                 st.line_chart(holdout.set_index('날짜')[['실제 최고기온','AI 최고기온']])
                 st.download_button('AI 검증 결과 CSV',holdout.to_csv(index=False).encode('utf-8-sig'),file_name=f'ai_validation_{selected_region}.csv',mime='text/csv')
+            st.subheader('🧠 전국 AI 7일 예측 · 직접 다중기간 모델')
+            st.caption('1~7일 후를 각각 독립 모델로 예측합니다. 미래 관측값을 입력에 사용하지 않으며, 최근 관측이 오래되면 예측을 중단합니다.')
+            try:
+                week,week_metrics,last_obs,is_fresh=seven_day_models(observations)
+                st.caption(f'학습 기준 마지막 관측일: {last_obs} · 예측 정확도는 날짜 순서대로 분리한 미학습 기간에서 평가')
+                if is_fresh and not week.empty:
+                    st.dataframe(week,use_container_width=True,hide_index=True)
+                    st.line_chart(week.set_index('날짜')[['최고기온(°C)','최저기온(°C)']])
+                    st.bar_chart(week.set_index('날짜')[['강수확률(%)']])
+                    st.download_button('전국 지역 AI 7일 예측 CSV',week.to_csv(index=False).encode('utf-8-sig'),file_name=f'ai_7day_{selected_region}.csv',mime='text/csv')
+                else:st.warning('최근 관측이 3일 이상 지연되어 7일 예측을 중단했습니다. 검증 결과만 제공합니다.')
+                with st.expander('7일 AI 예측 시차별 검증 성능'):
+                    st.dataframe(week_metrics,use_container_width=True,hide_index=True)
+                    st.caption('기상청보다 정확하다는 의미가 아닙니다. 공식 예보와 동일 날짜·지점의 과거 발행 기록을 확보해야 공정 비교가 가능합니다.')
+                st.markdown('**일강수량 기반 강한 비 패턴 분석**')
+                daily=daily_rain_extremes(observations)
+                if not daily.empty:st.dataframe(daily,use_container_width=True,hide_index=True)
+                st.caption('30mm·80mm 기준은 일강수량 분석용으로, 1시간 집중호우를 뜻하지 않습니다. 시간당 폭우 예측은 시간 관측·레이더 자료와 별도 검증이 필요합니다.')
+            except Exception as exc:st.warning(f'7일 AI 분석 실패: {type(exc).__name__}: {exc}')
             st.markdown('**지역별 여름철 강수 변화 (관측소 기준)**')
             periods=climate_periods(observations)
             if not periods.empty: st.dataframe(periods,use_container_width=True,hide_index=True)
