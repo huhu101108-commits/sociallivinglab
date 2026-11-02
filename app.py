@@ -19,11 +19,12 @@ from model import parse_csv, normalize, evaluate, predict_next, direct_features
 from kma_api import fetch_asos
 from forecast import fetch_forecast
 from nationwide_weather import REGIONS, nationwide_forecast, rain_summary, climate_rain_analysis
+from nationwide_ml import STATIONS, fetch_station_observations, train_and_predict, climate_periods
 from climate_risks import weather_risks, historical_baseline, historical_extremes
 
 st.set_page_config(page_title='칠성동 AI 기후 안전지킴이',page_icon='🌦️',layout='wide')
 st.title('🌦️ 칠성동 AI 기후 안전지킴이')
-st.caption('기존 칠성동 기온 AI · 전국 지역별 강수예보 · 장기 강수 패턴 비교 · 전국 무더위/한파쉼터')
+st.caption('기존 칠성동 기온 AI · 전국 지역별 기온/강수 AI(관측소 기반) · 기상청 예보 · 전국 무더위/한파쉼터')
 st.warning('대구 ASOS 관측소 자료와 기상청 예보 격자는 칠성동 개별 주소의 실측값이 아닙니다. 공식 특보·의료 판단을 대체하지 않습니다.')
 
 def secret(name):
@@ -89,7 +90,7 @@ def season_focus(forecast):
 tab_weather, tab_temp, tab_safety = st.tabs(['🌧️ 날씨 예측 · 전국', '🌡️ 기온 예측 · 기존 AI', '🗺️ 안전시설 · 행동요령'])
 with tab_weather:
     st.header('전국 지역별 강수·집중호우 분석')
-    st.caption('기상청 단기예보의 전국 격자별 강수·습도·바람을 분석합니다. AI 강수 모델은 아직 학습·검증되지 않아 예측값으로 표시하지 않습니다.')
+    st.caption('전국 공식 격자예보 + 관측소별 독립 AI 1일 예측 · 실제 시간순 검증. 지역별 관측소가 없는 경우 AI는 제공하지 않습니다.')
     selected_region=st.selectbox('전국 예측 지역',list(REGIONS),index=list(REGIONS).index('대구'),key='national_region')
     national_key=secret('KMA_FORECAST_KEY')
     if national_key:
@@ -109,6 +110,41 @@ with tab_weather:
             else: st.info('해당 지역의 현재 이후 강수예보 자료가 없습니다.')
         except Exception as exc: st.warning(f'전국 날씨 예보 조회 실패: {type(exc).__name__}: {exc}')
     else: st.info('기존 KMA_FORECAST_KEY를 Streamlit Secrets에 설정하면 전국 예보가 표시됩니다.')
+    st.subheader('🧠 지역별 AI 기온·강수 예측 (실제 관측 기반)')
+    st.caption('선택 지역의 가까운 대표 ASOS 관측소에서 최근 3년 관측을 받아 학습합니다. 마지막 관측일의 다음날 1일 예측이며, 7일 예보는 기상청 자료를 별도로 확인하세요.')
+    asos_key=secret('KMA_ASOS_KEY') or secret('ASOS_SERVICE_KEY')
+    if selected_region not in STATIONS:
+        st.info('선택한 지역은 검증된 ASOS 관측소 연결이 아직 없습니다. 기상청 격자 예보는 계속 이용할 수 있습니다.')
+    elif not asos_key:
+        st.info('AI 지역별 학습을 사용하려면 기존 ASOS 공공데이터포털 인증키를 Secrets의 KMA_ASOS_KEY에 설정하세요. 기상청 격자 예보는 기존 KMA_FORECAST_KEY를 사용합니다.')
+    else:
+        station_id,station_name=STATIONS[selected_region]
+        st.caption(f'대표 관측소: {station_name} (지점번호 {station_id}) · 관측소와 선택 지역의 실제 위치는 다를 수 있습니다.')
+        try:
+            with st.spinner('관측소 과거 자료를 조회하고 지역별 모델을 검증하는 중…'):
+                observations=fetch_station_observations(asos_key,station_id)
+                prediction,metrics,holdout=train_and_predict(observations)
+            if prediction is None:
+                st.warning('최신 관측값이 3일 이상 지연되거나 연속 관측이 부족해 현재 AI 예측을 중단했습니다. 검증된 과거 성능은 아래에서 확인할 수 있습니다.')
+            else:
+                st.caption(f"AI 예측 대상: {prediction['date']} · 마지막 관측일: {prediction['last_observed']} · 공식 예보가 아닌 관측 기반 통계 예측")
+                a,b,c=st.columns(3)
+                a.metric('AI 다음날 최고기온',f"{prediction['tmax']:.1f}°C")
+                b.metric('AI 다음날 최저기온',f"{prediction['tmin']:.1f}°C")
+                c.metric('AI 다음날 강수 발생 확률',f"{prediction['rain_prob']:.0%}")
+                st.caption('강수 확률은 관측소의 일강수량 0.1mm 이상 발생을 의미하며, 시간당 폭우나 침수 확률이 아닙니다.')
+            st.markdown('**최근 기간 시간순 검증 (학습에 사용하지 않은 데이터)**')
+            st.dataframe(metrics,use_container_width=True,hide_index=True)
+            if not holdout.empty:
+                st.line_chart(holdout.set_index('날짜')[['실제 최고기온','AI 최고기온']])
+                st.download_button('AI 검증 결과 CSV',holdout.to_csv(index=False).encode('utf-8-sig'),file_name=f'ai_validation_{selected_region}.csv',mime='text/csv')
+            st.markdown('**지역별 여름철 강수 변화 (관측소 기준)**')
+            periods=climate_periods(observations)
+            if not periods.empty: st.dataframe(periods,use_container_width=True,hide_index=True)
+            st.caption('3년 자료만으로 장기 기후변화를 결론 내릴 수 없습니다. 최근 여름철 비교 참고용이며 장기 추세 분석은 별도 20년 이상 자료가 필요합니다.')
+        except Exception as exc:
+            st.warning(f'지역 AI 분석을 실행하지 못했습니다: {type(exc).__name__}: {exc}')
+
     st.subheader('장마·단시간 강수 패턴 비교')
     st.caption('동남아 우기가 국내에 그대로 나타난다는 가정 대신, 실제 관측자료의 여름철 강수 집중도와 극한강수 일수를 비교합니다.')
     rain_file=Path(__file__).parent/'data'/'asos_143.csv'
@@ -515,7 +551,7 @@ with tab_safety:
             st.dataframe(nearby[['종류','이름','주소','직선거리(km)']],hide_index=True,use_container_width=True)
         else:
             st.caption(f'표시 시설: {len(facilities):,}곳 · 지도 확대/이동으로 확인하세요.')
-    colors={'무더위쉼터':[234,100,65,205],'한파쉼터':[42,123,224,205],
+    colors={'무더위쉼터':[234,100,65,205],'한파쉼터':[32,171,189,220],
             '민방위 대피시설':[127,87,192,205],'응급의료기관':[221,62,87,205],
             '기타 안전시설':[63,153,116,205]}
     layers=[]
@@ -526,11 +562,11 @@ with tab_safety:
               get_fill_color=color,get_radius=7,radius_min_pixels=4,radius_max_pixels=9,pickable=True))
     if user_lat is not None:
         layers.append(pdk.Layer('ScatterplotLayer',pd.DataFrame([{'lat':user_lat,'lon':user_lon,'이름':'내 위치','주소':'','종류':'내 위치'}]),
-            get_position='[lon,lat]',get_fill_color=[20,85,250,235],get_radius=9,radius_min_pixels=7,pickable=True))
+            get_position='[lon,lat]',get_fill_color=[255,225,20,255],get_line_color=[35,35,35,255],stroked=True,line_width_min_pixels=3,get_radius=12,radius_min_pixels=11,radius_max_pixels=16,pickable=True))
     st.pydeck_chart(pdk.Deck(map_style=None,initial_view_state=pdk.ViewState(
         latitude=center_lat,longitude=center_lon,zoom=11 if user_lat is not None else 6,pitch=0),
         layers=layers,tooltip={'text':'{종류}\\n{이름}\\n{주소}'}),use_container_width=True)
-    st.caption('주황: 무더위쉼터 · 파랑: 한파쉼터 · 보라: 대피시설 · 빨강: 응급의료기관 · 초록: 기타 시설 · 진한 파랑: 내 위치')
+    st.caption('주황: 무더위쉼터 · 청록: 한파쉼터 · 보라: 대피시설 · 빨강: 응급의료기관 · 초록: 기타 시설 · 노랑(검정 테두리): 내 위치')
     st.header('5. 사계절 위험기상 행동요령 (상세)')
     st.caption('일상에서 실천할 수 있는 폭염 대응 방법입니다. 실제 행동은 기상청 공식 특보와 현장 상황을 우선하세요.')
     with st.expander('☀️ 외출 전과 야외활동 중', expanded=True):
