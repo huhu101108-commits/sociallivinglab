@@ -21,6 +21,7 @@ from forecast import fetch_forecast
 from nationwide_weather import REGIONS, nationwide_forecast, rain_summary, climate_rain_analysis
 from nationwide_ml import STATIONS, fetch_station_observations, train_and_predict, climate_periods
 from nationwide_7day import seven_day_models, daily_rain_extremes
+from hourly_rain_ai import fetch_hourly_asos, forecast_hourly_rain, hourly_extremes
 from climate_risks import weather_risks, historical_baseline, historical_extremes
 
 st.set_page_config(page_title='칠성동 AI 기후 안전지킴이',page_icon='🌦️',layout='wide')
@@ -93,6 +94,28 @@ with tab_weather:
     st.header('전국 지역별 강수·집중호우 분석')
     st.caption('전국 공식 격자예보 + 관측소별 독립 AI 1일 예측 · 실제 시간순 검증. 지역별 관측소가 없는 경우 AI는 제공하지 않습니다.')
     selected_region=st.selectbox('전국 예측 지역',list(REGIONS),index=list(REGIONS).index('대구'),key='national_region')
+    with st.expander('🌧️ v11 전국 관측소 기반 시간당 강수 AI · 1/3/6시간 후', expanded=False):
+        st.caption('ASOS 시간자료를 직접 학습한 실험 모델입니다. 선택 지역 전체가 아닌 대표 관측소의 시간 강수량을 예측합니다. 레이더 초단기예보·공식 호우특보가 아닙니다.')
+        hourly_key=secret('KMA_ASOS_KEY') or secret('ASOS_SERVICE_KEY')
+        if selected_region not in STATIONS:
+            st.info('해당 지역에 연결된 ASOS 관측소가 없어 시간당 AI 예측을 제공하지 않습니다.')
+        elif not hourly_key:
+            st.info('기존 ASOS 키(KMA_ASOS_KEY 또는 ASOS_SERVICE_KEY)를 설정하면 이용할 수 있습니다.')
+        elif st.button('시간당 강수 AI 학습·예측 실행',key='hourly_rain_button'):
+            station_id,station_name=STATIONS[selected_region]
+            try:
+                with st.spinner('공식 시간자료 수집 및 1/3/6시간 모델 검증 중…'):
+                    hourly_obs=fetch_hourly_asos(hourly_key,station_id)
+                    hourly_pred,hourly_scores,hourly_latest=forecast_hourly_rain(hourly_obs)
+                st.success(f'{station_name} ASOS {station_id} · 최종 유효 관측 {hourly_latest} (KST)')
+                st.dataframe(hourly_pred,use_container_width=True,hide_index=True)
+                st.dataframe(hourly_scores,use_container_width=True,hide_index=True)
+                st.download_button('시간당 AI 예측 CSV',hourly_pred.to_csv(index=False).encode('utf-8-sig'),file_name=f'hourly_ai_{selected_region}.csv',mime='text/csv')
+                st.markdown('**최근 관측자료의 강한 비 발생 횟수 (예측 아님)**')
+                st.dataframe(hourly_extremes(hourly_obs),use_container_width=True,hide_index=True)
+                st.caption('관측 결측은 강수 0mm로 임의 대체하지 않습니다. 시간순 80/20 분할·경계 6시간 제외 검증. 강한 비가 드물면 모델이 과소예측할 수 있습니다. 침수 위험을 직접 판단하지 마세요.')
+            except Exception as exc:
+                st.warning(f'시간당 강수 AI 실행 실패: {type(exc).__name__}: {exc}')
     national_key=secret('KMA_FORECAST_KEY')
     if national_key:
         try:
