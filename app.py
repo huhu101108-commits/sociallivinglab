@@ -10,6 +10,7 @@ from future7 import predict_seven_days, predict_minimum_seven_days
 from shelters import parse_shelters, distances_km
 from facilities import parse_facilities, CATEGORIES
 from safetydata_api import fetch_shelters, normalize_shelters
+from cold_shelter_api import fetch_cold_shelters, normalize_cold_shelters
 import pandas as pd
 import numpy as np
 import streamlit as st
@@ -399,9 +400,13 @@ st.caption('계절 맞춤 안내는 기상조건에 따른 참고 정보이며 �
 def cached_safety_shelters(key):
     return normalize_shelters(fetch_shelters(key))
 
+@st.cache_data(ttl=86400,show_spinner='행정안전부 전국 한파쉼터 API를 조회하고 있습니다…')
+def cached_cold_shelters(key):
+    return normalize_cold_shelters(fetch_cold_shelters(key))
+
 st.header('4. 전국 기상 안전시설 지도')
-st.caption('무더위쉼터 API 처리 코드 v6 · LA/LO 좌표 검증')
-st.caption('무더위쉼터: 행정안전부 재난안전데이터공유플랫폼 API · 24시간 캐시. 기타 시설은 등록된 공식 CSV만 표시합니다. 운영 여부는 방문 전 확인하세요.')
+st.caption('쉼터 API 처리 코드 v7 · 무더위쉼터 LA/LO · 한파쉼터 LAT/LOT')
+st.caption('무더위쉼터·한파쉼터: 행정안전부 공식 API · 24시간 캐시. 두 API는 별도 인증키가 필요합니다. 실제 운영 여부는 방문 전 확인하세요.')
 if 'geo_enabled' not in st.session_state: st.session_state.geo_enabled=False
 if 'geo_coords' not in st.session_state: st.session_state.geo_coords=None
 c1,c2=st.columns(2)
@@ -432,14 +437,24 @@ if safety_key:
         st.warning(f'무더위쉼터 API 연결 실패: {exc}')
 else:
     st.info('전국 무더위쉼터를 표시하려면 Streamlit Secrets에 SAFETYDATA_SERVICE_KEY를 설정하세요.')
+cold_key=secret('SAFETYDATA_COLD_SERVICE_KEY')
+if cold_key:
+    try:
+        cold_api=cached_cold_shelters(cold_key)
+        datasets.append(cold_api)
+        st.success(f'행정안전부 API 한파쉼터 {len(cold_api):,}곳 조회 완료 (최대 24시간 캐시)')
+    except (ValueError, requests.RequestException) as exc:
+        st.warning(f'한파쉼터 API 연결 실패: {exc}')
+else:
+    st.info('전국 한파쉼터 API를 이용하려면 별도 이용신청 후 Streamlit Secrets에 SAFETYDATA_COLD_SERVICE_KEY를 설정하세요.')
 base=Path(__file__).parent/'data'
-for filename,kind in [('cold_shelters.csv','한파쉼터'),('evacuation.csv','민방위 대피시설'),('hospitals.csv','응급의료기관'),('safety_facilities.csv','기타 안전시설')]:
+for filename,kind in [('evacuation.csv','민방위 대피시설'),('hospitals.csv','응급의료기관'),('safety_facilities.csv','기타 안전시설')]:
     file=base/filename
     if file.exists():
         try: datasets.append(parse_facilities(file.read_bytes(),kind))
         except ValueError as exc: st.warning(f'{filename}: {exc}')
 with st.expander('공식 전국 시설 CSV 추가 (운영자용)',expanded=False):
-    kind=st.selectbox('자료 유형',[c for c in CATEGORIES if c!='무더위쉼터'],key='facility_kind')
+    kind=st.selectbox('자료 유형',[c for c in CATEGORIES if c not in ('무더위쉼터','한파쉼터')],key='facility_kind')
     uploaded=st.file_uploader('시설명·위도·경도가 있는 공식 CSV',type=['csv'],key='facility_upload')
     if uploaded:
         try: datasets.append(parse_facilities(uploaded.getvalue(),kind))
