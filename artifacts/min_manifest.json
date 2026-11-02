@@ -1,0 +1,8 @@
+{
+  "trained_at": "2026-11-02",
+  "validation_mae": 2.3933,
+  "validation_period": "2024-01-01 ~ 2025-12-31",
+  "training_end": "2026-10-31",
+  "validation_rows": 8041,
+  "target": "tmin"
+}
