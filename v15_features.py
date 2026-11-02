@@ -79,6 +79,12 @@ def climate_report(raw):
     frame.index.name=None
     frame=frame.dropna(subset=['date']).drop_duplicates(subset=['date']).sort_values(by=['date']).reset_index(drop=True)
     frame.loc[~frame.rain.between(0,1000),'rain']=np.nan
+    # ASOS often leaves daily precipitation blank on dry days. Treat blanks as
+    # zero ONLY when that day's temperature observation is present; do not turn
+    # entire missing observation days into false dry days.
+    temperature_columns=[c for c in ('tmax','tmin') if c in frame.columns]
+    observed=frame[temperature_columns].notna().any(axis=1) if temperature_columns else pd.Series(False,index=frame.index)
+    frame.loc[observed & frame['rain'].isna(),'rain']=0.0
     frame['year']=frame.date.dt.year
     agg={'관측일수':('rain','count'),'연강수량(mm)':('rain','sum'),'강한비 일수(30mm 이상)':('rain',lambda s:int((s>=30).sum())),'매우 강한비 일수(80mm 이상)':('rain',lambda s:int((s>=80).sum()))}
     if 'tmax' in frame:agg['평균 최고기온(°C)']=('tmax','mean')
