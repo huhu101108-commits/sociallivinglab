@@ -51,6 +51,10 @@ def evaluate_alerts(frame,pop_threshold,high_threshold,low_threshold):
 def climate_report(raw):
     if not isinstance(raw,pd.DataFrame):raise ValueError('표 형식 관측자료가 필요합니다.')
     x=raw.copy()
+    # A named index may collide with a date column in pandas operations.
+    # Normalize all input indexes before any sorting, grouping or deduplication.
+    x=x.reset_index(drop=True)
+    x.columns=x.columns.astype(str).str.strip()
     # Existing fetch_asos produces datetime index and normalized tmax/tmin/rain.
     names={'date':['tm','date','날짜','일시'],'rain':['rain','sumRn','일강수량(mm)','일강수량','강수량(mm)'],'tmax':['tmax','maxTa','최고기온(°C)','최고기온'],'tmin':['tmin','minTa','최저기온(°C)','최저기온']}
     # Build by position, never by an inherited DatetimeIndex named 'date'.
@@ -62,6 +66,8 @@ def climate_report(raw):
             d[k]=x[found].to_numpy()
         elif k=='date' and isinstance(x.index,pd.DatetimeIndex):
             d[k]=x.index.to_numpy()
+    if 'date' not in d and isinstance(raw.index,pd.DatetimeIndex):
+        d['date']=raw.index.to_numpy()
     if 'date' not in d or 'rain' not in d:
         raise ValueError('날짜와 일강수량 열이 필요합니다.')
     frame=pd.DataFrame(d, index=pd.RangeIndex(len(x)))
@@ -69,7 +75,9 @@ def climate_report(raw):
     frame['date']=pd.to_datetime(frame.date,errors='coerce')
     for k in ('rain','tmax','tmin'):
         if k in frame:frame[k]=pd.to_numeric(frame[k],errors='coerce')
-    frame=frame.dropna(subset=['date']).drop_duplicates('date').sort_values('date')
+    frame=frame.reset_index(drop=True)
+    frame.index.name=None
+    frame=frame.dropna(subset=['date']).drop_duplicates(subset=['date']).sort_values(by=['date']).reset_index(drop=True)
     frame.loc[~frame.rain.between(0,1000),'rain']=np.nan
     frame['year']=frame.date.dt.year
     agg={'관측일수':('rain','count'),'연강수량(mm)':('rain','sum'),'강한비 일수(30mm 이상)':('rain',lambda s:int((s>=30).sum())),'매우 강한비 일수(80mm 이상)':('rain',lambda s:int((s>=80).sum()))}
