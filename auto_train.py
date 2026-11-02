@@ -14,10 +14,18 @@ ROOT=Path(__file__).parent
 ART=ROOT/'artifacts'; ART.mkdir(exist_ok=True)
 DATA=ROOT/'data'; DATA.mkdir(exist_ok=True)
 
+def _combine_preserving_observations(old, new):
+    """Never erase a previously known value when a newer API response omits it."""
+    # combine_first fills only missing cells, prioritizing fresh non-null observations.
+    result=new.combine_first(old).sort_index().asfreq('D')
+    return result
+
+
 def dataset():
     key=os.environ['ASOS_SERVICE_KEY']
-    today=date.today()
-    end=today-timedelta(days=2)  # completed observation, allow reporting delay
+    # GitHub runners use UTC. Select the completed day in Korea explicitly.
+    today=pd.Timestamp.now(tz='Asia/Seoul').date()
+    end=today-timedelta(days=2)
     cached=DATA/'asos_143.csv'
     if cached.exists():
         from model import parse_csv, normalize
@@ -25,11 +33,35 @@ def dataset():
         start=(historical.index.max()+pd.Timedelta(days=1)).date()
         if start<=end:
             recent=fetch_asos(key,start=start.isoformat(),end=end.isoformat())
-            combined=pd.concat([historical,recent]); combined=combined[~combined.index.duplicated(keep='last')].asfreq('D')
-        else: combined=historical
+            combined=_combine_preserving_observations(historical,recent)
+        else:
+            combined=historical
     else:
         combined=fetch_asos(key,start='2006-01-01',end=end.isoformat())
+
+    # An older CSV may contain 20 years of tmax but only ~155 days of tmin.
+    # Fetch missing years again. The yearly API responses contain minTa, maxTa.
+    # A single successful run backfills history; future runs only fill new gaps.
+    backfilled=[]
+    for year in range(2006,end.year+1):
+        begin=pd.Timestamp(year=year,month=1,day=1)
+        finish=min(pd.Timestamp(year=year,month=12,day=31),pd.Timestamp(end))
+        if begin>finish: continue
+        dates=pd.date_range(begin,finish,freq='D')
+        existing=combined.reindex(dates)
+        coverage=existing['tmin'].notna().sum()/len(dates)
+        if coverage>=0.90: continue
+        print(f'Backfilling {year} minimum temperature (coverage {coverage:.1%})',flush=True)
+        fresh=fetch_asos(key,start=begin.date().isoformat(),end=finish.date().isoformat())
+        got=int(fresh['tmin'].notna().sum())
+        print(f'  API minTa available: {got} days',flush=True)
+        if got==0:
+            raise ValueError(f'{year}년 API 응답에 minTa가 없습니다. ASOS API 필드/인증을 확인하세요.')
+        combined=_combine_preserving_observations(combined,fresh)
+        backfilled.append(year)
     if len(combined)<365*15: raise ValueError('과거 관측자료가 부족합니다.')
+    tmin_days=int(combined['tmin'].notna().sum())
+    print(f'Available tmin observations: {tmin_days:,} days; backfilled years: {backfilled}',flush=True)
     combined.reset_index().rename(columns={'index':'date'}).to_csv(cached,index=False,encoding='utf-8-sig')
     return combined
 
