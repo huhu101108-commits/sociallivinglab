@@ -20,7 +20,7 @@ def parse_csv(content):
 def normalize(frames):
     parsed=[]
     for f in frames:
-        f=f.copy(); f.columns=f.columns.astype(str).str.strip()
+        f=f.copy().reset_index(drop=True); f.columns=f.columns.astype(str).str.strip()
         def get(names): return next((c for c in names if c in f.columns),None)
         d,t=get(DATE_NAMES),get(TEMP_NAMES)
         if not d or not t: raise ValueError('일시/최고기온 열이 없습니다: '+', '.join(f.columns[:12]))
@@ -29,7 +29,8 @@ def normalize(frames):
             if len(stations) and any(s!=143 for s in stations): raise ValueError('대구(143) 관측소 자료만 입력하세요.')
         h=get(HUM_NAMES); mn=get(MIN_NAMES); rn=get(RAIN_NAMES)
         parsed.append(pd.DataFrame({'tmin':pd.to_numeric(f[mn],errors='coerce') if mn else np.nan, 'rain':pd.to_numeric(f[rn],errors='coerce') if rn else np.nan, 'date':pd.to_datetime(f[d],errors='coerce'), 'tmax':pd.to_numeric(f[t],errors='coerce'), 'humidity':pd.to_numeric(f[h],errors='coerce') if h else np.nan}))
-    data=pd.concat(parsed).dropna(subset=['date']).sort_values('date').drop_duplicates('date',keep='last').set_index('date')
+    data=(pd.concat(parsed,ignore_index=True).reset_index(drop=True).rename_axis(None)
+          .dropna(subset=['date']).sort_values(by='date').drop_duplicates(subset=['date'],keep='last').set_index('date'))
     data=data.loc['2006-01-01':].asfreq('D')
     data.loc[~data.tmax.between(-30,50),'tmax']=np.nan
     data.loc[~data.humidity.between(0,100),'humidity']=np.nan

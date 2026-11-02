@@ -42,7 +42,7 @@ if 'current_page' not in st.session_state: st.session_state.current_page='홈'
 with st.sidebar:
     st.markdown('### 칠성동 AI 기후 안전지킴이')
     st.caption('전국 기상 분석 서비스')
-    st.caption('v19 날짜 충돌 수정 · 데이터 출처와 예측 한계를 구분해 표시합니다.')
+    st.caption('v20 기후 분석 진단 · 데이터 출처와 예측 한계를 구분해 표시합니다.')
     page=st.radio('메뉴',PAGES,key='current_page',label_visibility='collapsed')
     st.divider()
     st.caption('보고 싶은 메뉴만 선택하세요. 다른 메뉴의 분석은 실행하지 않습니다.')
@@ -228,7 +228,7 @@ if page=='전국 호우 위험 지도':
 
 if page=='기후 장기 분석':
     st.subheader('관측자료 기반 기후 장기 비교')
-    st.caption('v19 · 기후 분석 날짜 충돌 방어 적용 · 장기 분석은 관측기간만큼 지원')
+    st.caption('v20 · 기후 분석 실행 단계 진단 및 날짜 충돌 방어 · 장기 분석은 관측기간만큼 지원')
     st.caption('과거와 최근의 관측값을 같은 연수로 비교합니다. 기후변화 원인을 단정하지 않으며, 관측소 자료는 주변 모든 지역을 대표하지 않습니다.')
     st.write('날짜·일강수량·최고기온·최저기온 열이 있는 공식 ASOS CSV를 업로드하세요. 자료가 없으면 기상청 API를 통해 대구 관측자료를 조회할 수 있습니다.')
     uploaded=st.file_uploader('관측 CSV (10년 이상 권장)',type=['csv'],key='v15_climate_file')
@@ -254,7 +254,14 @@ if page=='기후 장기 분석':
                 st.line_chart(yearly.set_index('연도')[[c for c in ['연강수량(mm)','강한비 일수(30mm 이상)','평균 최고기온(°C)'] if c in yearly]])
                 st.dataframe(yearly,hide_index=True,use_container_width=True)
                 st.download_button('연도별 분석 CSV',yearly.to_csv(index=False).encode('utf-8-sig'),'climate_yearly.csv','text/csv')
-        except Exception as exc:st.warning('기후 분석 오류: '+safe_error(exc))
+        except Exception as exc:
+            import traceback
+            tb=traceback.extract_tb(exc.__traceback__)
+            relevant=[f for f in tb if f.filename.endswith(('/app.py','/v15_features.py','/model.py','/kma_api.py'))]
+            location=relevant[-1] if relevant else (tb[-1] if tb else None)
+            where=f'{Path(location.filename).name}:{location.lineno}' if location else '확인 불가'
+            st.warning('기후 분석 오류 (발생 위치 '+where+'): '+safe_error(exc))
+            st.caption('이 메시지에는 인증키와 요청 URL을 표시하지 않습니다. 오류 발생 위치를 알려주면 원인을 정확히 확인할 수 있습니다.')
 
 if page=='맞춤 알림':
     st.subheader('관심 지역 기상 주의 알림')
