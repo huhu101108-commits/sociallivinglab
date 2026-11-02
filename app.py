@@ -335,60 +335,53 @@ with st.expander('📊 20년 기후 분석 · 과거 AI 비교 · 상세 검증'
                 view=ev[ev['model']==selected].copy()
                 st.plotly_chart(px.line(view,x='date',y=['actual','pred'],title=f'{selected} 시간순 검증: 실제값 vs 예측값 (전체 검증기간)'),use_container_width=True)
 
-st.subheader('📅 날짜별 AI 예측과 실제 기온 비교')
-st.caption('매일 저장한 예측을 나중에 발표된 대구 ASOS 143 관측값과 비교합니다. 관측소 기온은 칠성동 개별 지점의 실측값이 아닙니다.')
+st.subheader('📅 최고·최저기온 AI 예측 정확도')
+st.caption('매일 실제로 기록한 예측만 나중에 발표된 ASOS 관측값과 비교합니다. 과거 학습값은 정확도 통계에 포함하지 않습니다.')
 log_path=Path(__file__).parent/'data'/'prediction_history.csv'
 if log_path.exists():
     try:
         history=pd.read_csv(log_path,encoding='utf-8-sig')
-        required={'issued_at','target_date','horizon','predicted_tmax','actual_tmax'}
-        if not required.issubset(history.columns):
-            st.warning('예측 기록의 필수 열이 누락되었습니다. daily_monitor.py 실행 기록을 확인하세요.')
-        elif history.empty:
-            st.info('아직 저장된 예측이 없습니다. GitHub Actions의 첫 실행을 기다려 주세요.')
+        if history.empty or not {'issued_at','target_date','horizon'}.issubset(history.columns):
+            st.info('예측 기록이 아직 없습니다.')
         else:
             history['target_date']=pd.to_datetime(history['target_date'],errors='coerce')
             history['issued_at']=pd.to_datetime(history['issued_at'],errors='coerce',utc=True)
-            for c in ['horizon','predicted_tmax','actual_tmax']:
-                history[c]=pd.to_numeric(history[c],errors='coerce')
-            history=history.dropna(subset=['target_date','issued_at','horizon','predicted_tmax']).copy()
+            for col in ['horizon','predicted_tmax','actual_tmax','predicted_tmin','actual_tmin']:
+                if col not in history:history[col]=float('nan')
+                history[col]=pd.to_numeric(history[col],errors='coerce')
+            history=history.dropna(subset=['target_date','issued_at','horizon'])
             history['horizon']=history['horizon'].astype(int)
-            history['absolute_error']=(history['predicted_tmax']-history['actual_tmax']).abs()
-            horizon=st.selectbox('몇 일 전에 예측한 결과를 볼까요?',list(range(1,8)),format_func=lambda n:f'{n}일 전 예측',index=0,key='history_horizon')
-            selected=history[history['horizon']==horizon].sort_values(['target_date','issued_at']).drop_duplicates('target_date',keep='first').sort_values('target_date',ascending=False).copy()
-            if selected.empty:
-                st.info('선택한 예측일차의 기록이 아직 없습니다.')
+            horizon=st.selectbox('예측 시점',list(range(1,8)),format_func=lambda n:f'{n}일 전 예측',key='accuracy_horizon')
+            kind=st.segmented_control('비교할 기온',options=['최고기온','최저기온'],default='최고기온',key='accuracy_kind')
+            pred_col,actual_col=('predicted_tmax','actual_tmax') if kind=='최고기온' else ('predicted_tmin','actual_tmin')
+            selected=history[history.horizon.eq(horizon)].sort_values(['target_date','issued_at']).drop_duplicates('target_date',keep='first').sort_values('target_date').copy()
+            selected['오차']=abs(selected[pred_col]-selected[actual_col])
+            scored=selected.dropna(subset=[pred_col,actual_col])
+            a,b,c=st.columns(3)
+            a.metric('검증 완료',f'{len(scored)}일')
+            b.metric('평균 절대오차',f"{scored['오차'].mean():.2f}°C" if len(scored) else '기록 대기')
+            c.metric('예측 기록',f'{selected[pred_col].notna().sum()}일')
+            if len(scored):
+                view=scored.set_index('target_date')[[pred_col,actual_col]]
+                view.columns=['AI 예측','실제 관측']
+                st.line_chart(view,y_label='기온 (°C)')
+                st.line_chart(scored.set_index('target_date')['오차'],y_label='절대오차 (°C)')
             else:
-                scored=selected.dropna(subset=['actual_tmax','absolute_error'])
-                col1,col2,col3=st.columns(3)
-                col1.metric('비교 완료',f'{len(scored)}일')
-                col2.metric('평균 절대오차 (MAE)',f"{scored['absolute_error'].mean():.2f}°C" if len(scored) else '계산 대기')
-                col3.metric('관측 대기',f'{len(selected)-len(scored)}일')
-                table=selected[['target_date','predicted_tmax','actual_tmax','absolute_error']].copy()
-                table['상태']=table['actual_tmax'].apply(lambda v:'관측 대기' if pd.isna(v) else '비교 완료')
-                table['target_date']=table['target_date'].dt.strftime('%Y-%m-%d')
-                table.columns=['날짜','AI 예측 (°C)','실제 최고기온 (°C)','오차 (°C)','상태']
-                st.dataframe(table,hide_index=True,use_container_width=True,
-                    column_config={
-                        'AI 예측 (°C)':st.column_config.NumberColumn(format='%.1f'),
-                        '실제 최고기온 (°C)':st.column_config.NumberColumn(format='%.1f'),
-                        '오차 (°C)':st.column_config.NumberColumn(format='%.2f'),
-                    })
-                if len(scored):
-                    st.markdown('**날짜별 예측 오차 추이**')
-                    trend=scored.sort_values('target_date').set_index('target_date')['absolute_error']
-                    st.line_chart(trend,y_label='절대오차 (°C)',x_label='실제 기온 날짜')
-                    st.markdown('**AI 예측 기온과 실제 기온 비교**')
-                    comparison=scored.sort_values('target_date').set_index('target_date')[['predicted_tmax','actual_tmax']]
-                    comparison.columns=['AI 예측 최고기온','실제 최고기온']
-                    st.line_chart(comparison,y_label='최고기온 (°C)',x_label='날짜')
-                st.download_button('날짜별 예측·관측 비교 CSV 다운로드',table.to_csv(index=False).encode('utf-8-sig'),
-                    file_name=f'forecast_vs_actual_{horizon}day.csv',mime='text/csv')
-            st.caption(f'전체 예측 기록 {len(history)}건 · 관측자료가 갱신되면 매일 자동 비교됩니다. 실제 관측이 없는 날짜는 오차 계산에서 제외됩니다.')
+                st.info('아직 해당 기온의 예측과 실제 관측이 모두 기록된 날짜가 없습니다. 최저기온은 업데이트 후 새로 발행한 예측부터 누적됩니다.')
+            table=selected[['target_date',pred_col,actual_col,'오차']].copy()
+            table.columns=['날짜','AI 예측(°C)','실제 관측(°C)','절대오차(°C)']
+            table['날짜']=table['날짜'].dt.strftime('%Y-%m-%d')
+            st.dataframe(table.sort_values('날짜',ascending=False),hide_index=True,use_container_width=True)
+            st.download_button('선택한 예측 정확도 CSV',table.to_csv(index=False).encode('utf-8-sig'),
+                file_name=f'accuracy_{kind}_{horizon}day.csv',mime='text/csv',key='accuracy_download')
+            with st.expander('최고·최저기온 전체 오차 요약'):
+                for label,pr,ac in [('최고기온','predicted_tmax','actual_tmax'),('최저기온','predicted_tmin','actual_tmin')]:
+                    valid=history.dropna(subset=[pr,ac])
+                    st.write(f"{label}: {len(valid)}건 · MAE {abs(valid[pr]-valid[ac]).mean():.2f}°C" if len(valid) else f'{label}: 검증 기록 대기')
     except Exception as exc:
-        st.warning(f'예측 기록을 읽지 못했습니다: {type(exc).__name__}')
+        st.warning(f'예측 기록 표시 오류: {type(exc).__name__}: {exc}')
 else:
-    st.info('아직 예측 기록이 없습니다. GitHub Actions → AI daily improvement → Run workflow를 실행하면 기록이 시작됩니다.')
+    st.info('아직 예측 기록이 없습니다. GitHub Actions 자동 학습 후 기록됩니다.')
 
 st.header('3. 계절 맞춤 행동요령')
 focus,_,_=season_focus(forecast)
@@ -401,7 +394,7 @@ else:
 st.caption('계절 맞춤 안내는 기상조건에 따른 참고 정보이며 공식 기상특보가 아닙니다.')
 
 st.header('4. 전국 기상 안전시설 지도')
-st.caption('전국 공식 좌표 데이터가 있는 시설만 표시합니다. 운영 여부와 개방시간은 방문 전에 확인하세요.')
+st.caption('전국 공식 좌표 자료를 추가하면 전국 어디든 검색·표시할 수 있습니다. 현재 제공된 CSV 범위만 지도에 표시되며 운영 여부는 확인이 필요합니다.')
 if 'geo_enabled' not in st.session_state: st.session_state.geo_enabled=False
 if 'geo_coords' not in st.session_state: st.session_state.geo_coords=None
 c1,c2=st.columns(2)
@@ -434,7 +427,7 @@ with st.expander('공식 전국 시설 CSV 추가 (운영자용)',expanded=False
     if uploaded:
         try: datasets.append(parse_facilities(uploaded.getvalue(),kind))
         except ValueError as exc: st.warning(str(exc))
-    st.caption('업로드 자료는 현재 세션에서만 표시됩니다. 모든 방문자에게 제공하려면 data/ 폴더에 해당 CSV를 저장하세요.')
+    st.caption('전국 데이터는 공공데이터포털 또는 지자체 공식 CSV에서 확보하세요. 시설명·위도·경도 열이 필요하며, 업로드는 현재 세션에만 적용됩니다.')
 if datasets:
     facilities=pd.concat(datasets,ignore_index=True).drop_duplicates(['이름','lat','lon','종류'])
     kinds=sorted(facilities['종류'].dropna().unique().tolist())
