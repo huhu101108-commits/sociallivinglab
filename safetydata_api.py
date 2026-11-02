@@ -68,24 +68,35 @@ def fetch_shelters(key,rows_per_page=500,max_pages=150):
         raise ValueError("페이지 제한에 도달했습니다. 전국 데이터 수집 완료 여부를 확인하세요.")
     return pd.DataFrame(all_rows)
 
+def _degree(value):
+    """Only accept WGS84-like degree values, never silently treat projected X/Y as degrees."""
+    try:
+        v=float(str(value).strip().replace(",", ""))
+        return v if pd.notna(v) else None
+    except (TypeError,ValueError):
+        return None
+
 def normalize_shelters(raw):
-    if raw.empty:raise ValueError("무더위쉼터 데이터가 비어 있습니다.")
-    examples=list(raw.columns)
+    if raw.empty:raise ValueError("무더위쉼터 API가 빈 목록을 반환했습니다.")
     normalized=[]
     for row in raw.to_dict("records"):
         name=_find(row,FIELDS["name"])
-        lat=_find(row,FIELDS["lat"])
-        lon=_find(row,FIELDS["lon"])
-        if name is None or lat is None or lon is None:continue
+        if name is None or not str(name).strip():continue
+        lat=lon=None
+        for latkey,lonkey in (("LA","LO"),("LAT","LON"),("LATITUDE","LONGITUDE"),("YCORD","XCORD")):
+            la=_degree(_find(row,(latkey,)))
+            lo=_degree(_find(row,(lonkey,)))
+            if la is not None and lo is not None and 33<=la<=39.5 and 124<=lo<=132:
+                lat,lon=la,lo
+                break
+        if lat is None:continue
         normalized.append({"이름":str(name).strip(),
             "주소":str(_find(row,FIELDS["address"]) or "").strip(),
             "종류":"무더위쉼터","lat":lat,"lon":lon})
     if not normalized:
-        raise ValueError("API 필드명을 자동 인식하지 못했습니다. 실제 응답 필드: "+", ".join(map(str,examples[:25])))
-    df=pd.DataFrame(normalized)
-    df["lat"]=pd.to_numeric(df["lat"],errors="coerce")
-    df["lon"]=pd.to_numeric(df["lon"],errors="coerce")
-    df=df.dropna(subset=["lat","lon"])
-    df=df[df["lat"].between(33,39.5)&df["lon"].between(124,132)&df["이름"].ne("")]
-    if df.empty:raise ValueError("좌표가 유효한 쉼터가 없습니다. 위도·경도 필드를 확인하세요.")
-    return df.drop_duplicates(["이름","lat","lon"]).reset_index(drop=True)
+        preview=[]
+        for field in ("RSTR_NM","LA","LO","YCORD","XCORD"):
+            if field in raw.columns:
+                preview.append(f"{field}={raw[field].head(2).astype(str).tolist()}")
+        raise ValueError("좌표를 가진 쉼터를 찾지 못했습니다. 좌표 예시: "+"; ".join(preview)+". 좌표계 확인이 필요합니다.")
+    return pd.DataFrame(normalized).drop_duplicates(["이름","lat","lon"]).reset_index(drop=True)

@@ -400,6 +400,7 @@ def cached_safety_shelters(key):
     return normalize_shelters(fetch_shelters(key))
 
 st.header('4. 전국 기상 안전시설 지도')
+st.caption('무더위쉼터 API 처리 코드 v6 · LA/LO 좌표 검증')
 st.caption('무더위쉼터: 행정안전부 재난안전데이터공유플랫폼 API · 24시간 캐시. 기타 시설은 등록된 공식 CSV만 표시합니다. 운영 여부는 방문 전 확인하세요.')
 if 'geo_enabled' not in st.session_state: st.session_state.geo_enabled=False
 if 'geo_coords' not in st.session_state: st.session_state.geo_coords=None
