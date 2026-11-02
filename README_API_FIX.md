@@ -1,0 +1,1 @@
+API 실측 응답 필드 RSTR_NM, LA, LO, RN_DTL_ADRES, DTL_ADRES 반영. XCORD/YCORD는 보조 필드이며 한국 위경도 범위 검증. API 인증키 실제 호출 테스트는 수행하지 않음. 기존 최고·최저기온 예측 및 오차 분석 유지. 적용 시 app.py와 safetydata_api.py를 함께 배포.

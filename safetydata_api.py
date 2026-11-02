@@ -5,9 +5,9 @@ import pandas as pd
 URL="https://www.safetydata.go.kr/V2/api/DSSP-IF-10942"
 FIELDS={
     "name":("SHLTR_NM","SHELTER_NM","RSTR_NM","FACLT_NM","FCLT_NM","FCLT_NM","SHLTR_NAME","무더위쉼터명","쉼터명","시설명"),
-    "address":("ROAD_NM_ADDR","RDNMADR","ROAD_ADDR","ADDR","DTL_ADDR","LOTNO_ADDR","도로명주소","주소","소재지도로명주소"),
-    "lat":("LAT","LATITUDE","YCRD","Y_COORD","위도","lat","latitude"),
-    "lon":("LOT","LON","LONGITUDE","XCRD","X_COORD","경도","lon","longitude"),
+    "address":("RN_DTL_ADRES","DTL_ADRES","ROAD_NM_ADDR","RDNMADR","ROAD_ADDR","ADDR","DTL_ADDR","LOTNO_ADDR","도로명주소","주소","소재지도로명주소"),
+    "lat":("LA","LAT","LATITUDE","YCORD","YCRD","Y_COORD","위도","lat","latitude"),
+    "lon":("LO","LOT","LON","LONGITUDE","XCORD","XCRD","X_COORD","경도","lon","longitude"),
 }
 def _find(d,options):
     for key in options:
