@@ -41,6 +41,7 @@ if 'current_page' not in st.session_state: st.session_state.current_page='홈'
 with st.sidebar:
     st.markdown('### 칠성동 AI 기후 안전지킴이')
     st.caption('전국 기상 분석 서비스')
+    st.caption('최종 안정화 버전 · 데이터 출처와 예측 한계를 구분해 표시합니다.')
     page=st.radio('메뉴',PAGES,key='current_page',label_visibility='collapsed')
     st.divider()
     st.caption('보고 싶은 메뉴만 선택하세요. 다른 메뉴의 분석은 실행하지 않습니다.')
@@ -76,6 +77,16 @@ if page=='홈':
 2. **기온 예측**: 전국 AI 예측과 대구의 장기 분석·검증을 확인합니다.
 3. **안전시설 지도**: 쉼터 종류를 선택하고 내 위치를 표시합니다.""")
     st.info('AI 예측은 연구용 추정이며 기상청의 공식 예보나 재난특보를 대체하지 않습니다.')
+    with st.expander('서비스 준비 상태 및 데이터 출처',expanded=False):
+        st.write('공식 예보: 기상청 단기예보 API / 관측: 기상청 ASOS / 쉼터: 행정안전부 재난안전데이터공유플랫폼')
+        for label,setting in [('기상청 예보','KMA_FORECAST_KEY'),('기상청 관측','KMA_ASOS_KEY'),('무더위쉼터','SAFETYDATA_SERVICE_KEY'),('한파쉼터','SAFETYDATA_COLD_SERVICE_KEY')]:
+            try: available=bool(st.secrets.get(setting,''))
+            except Exception: available=False
+            if setting=='KMA_ASOS_KEY':
+                try: available=available or bool(st.secrets.get('ASOS_SERVICE_KEY',''))
+                except Exception: pass
+            st.write(f'{label}: '+('설정됨' if available else '설정 확인 필요'))
+        st.caption('인증키 값은 표시하지 않습니다. 일부 서비스는 API 승인 범위에 따라 이용이 제한될 수 있습니다.')
 
 def secret(name):
     try: return str(st.secrets.get(name,'')).strip()
@@ -177,19 +188,28 @@ if page=='전국 호우 위험 지도':
     st.caption('기상청 단기예보의 강수확률·시간강수량을 요약한 참고 지표입니다. 공식 호우특보, 실제 침수위험도 또는 AI 호우 예측 지도가 아닙니다.')
     key=secret('KMA_FORECAST_KEY')
     if not key:st.info('KMA_FORECAST_KEY가 필요합니다.')
-    elif st.button('전국 대표 지역 30곳 분석 시작',key='v15_risk_run',type='primary'):
-        results=[];progress=st.progress(0)
-        for i,(region,(lat,lon)) in enumerate(REGIONS.items()):
+    else:
+        selected_map_regions=st.multiselect('지도 분석 지역 선택',list(REGIONS),default=list(REGIONS)[:30],help='기본 30곳을 선택하며 필요하면 전국 전체 지역을 선택할 수 있습니다. 지역별 API 호출이 발생합니다.',key='v16_risk_regions')
+    if key and selected_map_regions and st.button(f'선택한 {len(selected_map_regions)}개 지역 분석 시작',key='v15_risk_run',type='primary'):
+        results=[];failed=[];progress=st.progress(0)
+        for i,region in enumerate(selected_map_regions):
+            lat,lon=REGIONS[region]
             try:
                 f,issued,_=nationwide_forecast(key,region)
                 score=forecast_risk(f)
                 results.append({'지역':region,'lat':lat,'lon':lon,'강수확률 최고(%)':score['max_pop'],'강수량 최대(mm)':score['max_rain'],'지표':score['label'],'수준':score['level'],'예보 발표':str(issued)})
-            except Exception:pass
-            progress.progress((i+1)/len(REGIONS))
+            except Exception as exc:
+                failed.append({'지역':region,'오류 유형':type(exc).__name__})
+            progress.progress((i+1)/len(selected_map_regions))
         st.session_state['v15_risk_results']=results
+        st.session_state['v17_risk_failed']=failed
+        if failed: st.warning(f'선택 지역 중 {len(failed)}곳의 예보를 조회하지 못했습니다. 결과는 정상 조회 지역만 표시합니다.')
+    if st.session_state.get('v17_risk_failed'):
+        with st.expander('조회 실패 지역 확인'):
+            st.dataframe(pd.DataFrame(st.session_state['v17_risk_failed']),hide_index=True,use_container_width=True)
     if st.session_state.get('v15_risk_results'):
         frame=region_risk_frame(st.session_state['v15_risk_results'])
-        st.caption(f'정상 조회 지역 {len(frame)}곳 / 전체 {len(REGIONS)}곳 · 각 지역 공식 격자예보 기반')
+        st.caption(f'정상 조회 지역 {len(frame)}곳 / 선택한 {len(st.session_state.get('v16_risk_regions', []))}곳 · 각 지역 공식 격자예보 기반')
         st.pydeck_chart(pdk.Deck(map_style=None,initial_view_state=pdk.ViewState(latitude=36.2,longitude=127.8,zoom=6),layers=[pdk.Layer('ScatterplotLayer',frame,get_position='[lon,lat]',get_fill_color='color',get_radius=18000,radius_min_pixels=6,radius_max_pixels=22,pickable=True)],tooltip={'text':'{지역}\n{지표}\n강수확률 최고: {강수확률 최고(%)}%'}),use_container_width=True)
         st.dataframe(frame.drop(columns=['lat','lon','color']),hide_index=True,use_container_width=True)
         st.download_button('지도 결과 CSV',frame.drop(columns=['color']).to_csv(index=False).encode('utf-8-sig'),'rain_risk_regions.csv','text/csv')
@@ -197,6 +217,7 @@ if page=='전국 호우 위험 지도':
 
 if page=='기후 장기 분석':
     st.subheader('관측자료 기반 기후 장기 비교')
+    st.caption('v16: 날짜 인덱스 충돌 수정 · 장기 분석은 업로드한 자료의 관측기간만큼 지원')
     st.caption('과거와 최근의 관측값을 같은 연수로 비교합니다. 기후변화 원인을 단정하지 않으며, 관측소 자료는 주변 모든 지역을 대표하지 않습니다.')
     st.write('날짜·일강수량·최고기온·최저기온 열이 있는 공식 ASOS CSV를 업로드하세요. 자료가 없으면 기상청 API를 통해 대구 관측자료를 조회할 수 있습니다.')
     uploaded=st.file_uploader('관측 CSV (10년 이상 권장)',type=['csv'],key='v15_climate_file')
@@ -779,6 +800,11 @@ if page=='안전시설 지도' and st.session_state.get('safety_section')=='시�
         kinds=sorted(facilities['종류'].dropna().unique().tolist())
         selected_kinds=st.multiselect('지도에 표시할 시설',kinds,default=kinds,key='map_facility_types')
         facilities=facilities[facilities['종류'].isin(selected_kinds)].copy()
+        search_name=st.text_input('시설명 또는 주소 검색 (선택)',placeholder='예: 칠성동, 경로당',key='v17_facility_search').strip()
+        if search_name:
+            match=facilities['이름'].fillna('').astype(str).str.contains(search_name,case=False,regex=False) | facilities['주소'].fillna('').astype(str).str.contains(search_name,case=False,regex=False)
+            facilities=facilities.loc[match].copy()
+            st.caption(f'검색 결과: {len(facilities):,}곳')
     else:
         facilities=pd.DataFrame(columns=['이름','주소','종류','lat','lon'])
         st.info('현재 등록된 시설 데이터가 없습니다. 전국 공식 시설 CSV를 추가하면 지도에 표시됩니다.')
@@ -805,6 +831,7 @@ if page=='안전시설 지도' and st.session_state.get('safety_section')=='시�
     st.pydeck_chart(pdk.Deck(map_style=None,initial_view_state=pdk.ViewState(
         latitude=center_lat,longitude=center_lon,zoom=11 if user_lat is not None else 6,pitch=0),
         layers=layers,tooltip={'text':'{종류}\\n{이름}\\n{주소}'}),use_container_width=True)
+    st.caption('지도 검색은 시설명·주소의 텍스트 일치 결과입니다. 검색 결과가 없어도 공식 API 데이터가 없다는 뜻은 아닙니다.')
     st.caption('주황: 무더위쉼터 · 청록: 한파쉼터 · 보라: 대피시설 · 빨강: 응급의료기관 · 초록: 기타 시설 · 노랑(검정 테두리): 내 위치')
     with st.expander('위험기상 행동요령 상세',expanded=False):
         st.caption('행동요령 메뉴에서도 기본 안내를 확인할 수 있습니다.')

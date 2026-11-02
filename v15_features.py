@@ -15,7 +15,9 @@ def closest_region(lat,lon,regions):
 def forecast_risk(f):
     now=pd.Timestamp.now(tz='Asia/Seoul').tz_localize(None).floor('h')
     future=f.loc[f.index>=now].head(48)
-    if future.empty:future=f.tail(48)
+    # Never interpret expired forecasts as current conditions.
+    if future.empty:
+        return {'max_pop':np.nan,'max_rain':np.nan,'level':0,'label':'최신 예보 없음','hours':0}
     pop=pd.to_numeric(future['POP'],errors='coerce') if 'POP' in future else pd.Series(dtype=float)
     rain=future['PCP'].map(parse_rain) if 'PCP' in future else pd.Series(dtype=float)
     p=pop.max() if len(pop) else np.nan
@@ -57,7 +59,9 @@ def climate_report(raw):
         if found is not None:d[k]=x[found]
         elif k=='date' and isinstance(x.index,pd.DatetimeIndex):d[k]=pd.Series(x.index,index=x.index)
     if 'date' not in d or 'rain' not in d:raise ValueError('날짜와 일강수량 열이 필요합니다.')
-    frame=pd.DataFrame(d).copy()
+    # A datetime index named 'date' and a 'date' column conflict in pandas sort_values.
+    # Normalize to a plain RangeIndex before sorting/grouping.
+    frame=pd.DataFrame(d).reset_index(drop=True)
     frame['date']=pd.to_datetime(frame.date,errors='coerce')
     for k in ('rain','tmax','tmin'):
         if k in frame:frame[k]=pd.to_numeric(frame[k],errors='coerce')
