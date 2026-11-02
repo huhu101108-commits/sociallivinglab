@@ -228,7 +228,7 @@ if page=='전국 호우 위험 지도':
 
 if page=='기후 장기 분석':
     st.subheader('관측자료 기반 기후 장기 비교')
-    st.caption('v20 · 기후 분석 실행 단계 진단 및 날짜 충돌 방어 · 장기 분석은 관측기간만큼 지원')
+    st.caption('v21 · 기후 장기 분석 그래프 3종 분리 · 기존 기능 유지')
     st.caption('과거와 최근의 관측값을 같은 연수로 비교합니다. 기후변화 원인을 단정하지 않으며, 관측소 자료는 주변 모든 지역을 대표하지 않습니다.')
     st.write('날짜·일강수량·최고기온·최저기온 열이 있는 공식 ASOS CSV를 업로드하세요. 자료가 없으면 기상청 API를 통해 대구 관측자료를 조회할 수 있습니다.')
     uploaded=st.file_uploader('관측 CSV (10년 이상 권장)',type=['csv'],key='v15_climate_file')
@@ -251,7 +251,19 @@ if page=='기후 장기 분석':
             summary,yearly=climate_report(safe_climate)
             st.dataframe(summary,hide_index=True,use_container_width=True)
             if not yearly.empty:
-                st.line_chart(yearly.set_index('연도')[[c for c in ['연강수량(mm)','강한비 일수(30mm 이상)','평균 최고기온(°C)'] if c in yearly]])
+                chart_data=yearly.copy().sort_values('연도').set_index('연도')
+                st.markdown('#### 연도별 강수량')
+                if '연강수량(mm)' in chart_data:
+                    st.line_chart(chart_data[['연강수량(mm)']], y_label='강수량 (mm)', use_container_width=True)
+                st.markdown('#### 강한 비 발생 일수')
+                heavy_cols=[c for c in ['강한비 일수(30mm 이상)','매우 강한비 일수(80mm 이상)'] if c in chart_data]
+                if heavy_cols:
+                    st.line_chart(chart_data[heavy_cols], y_label='일수 (일)', use_container_width=True)
+                st.markdown('#### 연평균 최고·최저기온')
+                temp_cols=[c for c in ['평균 최고기온(°C)','평균 최저기온(°C)'] if c in chart_data]
+                if temp_cols:
+                    st.line_chart(chart_data[temp_cols], y_label='기온 (°C)', use_container_width=True)
+                st.caption('연강수량·강한 비 일수·기온은 단위가 달라 각각 별도 그래프로 표시합니다. 결측 연도는 관측자료 기준에 따라 제외됩니다.')
                 st.dataframe(yearly,hide_index=True,use_container_width=True)
                 st.download_button('연도별 분석 CSV',yearly.to_csv(index=False).encode('utf-8-sig'),'climate_yearly.csv','text/csv')
         except Exception as exc:
