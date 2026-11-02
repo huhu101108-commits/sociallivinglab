@@ -30,7 +30,7 @@ def parse_shelters(blob):
                       'lat':pd.to_numeric(df[lat],errors='coerce'),
                       'lon':pd.to_numeric(df[lon],errors='coerce')})
     out=out.dropna(subset=['lat','lon'])
-    out=out[out.lat.between(35.5,36.2)&out.lon.between(128.3,128.9)]
+    out=out[out.lat.between(33,39.5)&out.lon.between(124,132)]
     out=out[(out['이름']!='')&(out['이름']!='nan')]
     return out.drop_duplicates(['이름','lat','lon']).reset_index(drop=True)
 

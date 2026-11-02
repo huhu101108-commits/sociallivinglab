@@ -7,6 +7,7 @@ import pydeck as pdk
 from streamlit_geolocation import streamlit_geolocation
 from future7 import predict_seven_days, predict_minimum_seven_days
 from shelters import parse_shelters, distances_km
+from facilities import parse_facilities, CATEGORIES
 import pandas as pd
 import numpy as np
 import streamlit as st
@@ -134,6 +135,30 @@ else:
         st.success('제공된 예보 항목에서 설정 기준을 넘는 기상조건이 없습니다.')
 st.caption('이 결과는 기온·풍속·습도 등의 간단한 기준에 따른 참고 안내이며, 공식 폭염·한파·강풍·호우·건조특보가 아닙니다.')
 st.markdown('[기상청 공식 예보·특보 확인](https://www.weather.go.kr/)')
+
+with st.expander('📅 향후 날짜별 다양한 기상 예측 보기',expanded=False):
+    if forecast is not None and not forecast.empty:
+        f=forecast.copy()
+        f=f[f.index>=pd.Timestamp.now(tz='Asia/Seoul').tz_localize(None).floor('h')]
+        if not f.empty:
+            daily=pd.DataFrame(index=f.resample('D').size().index)
+            for col,label,agg in [('TMP','기온 최고(°C)','max'),('TMN','최저기온(°C)','min'),
+                                  ('TMX','최고기온(°C)','max'),('POP','강수확률 최고(%)','max'),
+                                  ('WSD','풍속 최고(m/s)','max'),('REH','습도 최저(%)','min')]:
+                if col in f:
+                    vals=pd.to_numeric(f[col],errors='coerce')
+                    daily[label]=getattr(vals.resample('D'),agg)()
+            if 'PCP' in f:
+                raw=f['PCP'].astype(str).str.extract(r'(\\d+(?:\\.\\d+)?)\\s*mm',expand=False)
+                daily['시간대 강수량 표기 최대(mm)']=pd.to_numeric(raw,errors='coerce').resample('D').max()
+            if 'SNO' in f:
+                daily['적설 예보 항목']=f['SNO'].astype(str).resample('D').apply(
+                    lambda x:'표기 있음' if x.str.contains(r'\\d+(?:\\.\\d+)?\\s*cm',regex=True).any() else '표기 없음')
+            daily.index=daily.index.strftime('%m-%d')
+            st.dataframe(daily,use_container_width=True)
+            st.caption('기상청 공식 예보 항목만 표시합니다. 강수량 표기는 시간대 최대값이며 일 누적 강수량이 아닙니다.')
+        else: st.info('현재 이후의 예보가 없습니다.')
+    else: st.info('공식 예보가 연결되면 강수·바람·습도·기온을 날짜별로 볼 수 있습니다.')
 
 st.header('2. AI 7일 기온 전망 · 계절별 이상기온')
 st.caption('과거 기상자료로 학습한 AI가 향후 7일의 기온을 추정합니다. 공식 기상청 예보와는 별개입니다.')
@@ -342,75 +367,73 @@ else:
     st.info('일교차에 맞는 옷차림을 준비하고, 강수·강풍 예보와 기상청 특보를 확인하세요.')
 st.caption('계절 맞춤 안내는 기상조건에 따른 참고 정보이며 공식 기상특보가 아닙니다.')
 
-st.header('4. 쉼터 지도 · 내 위치')
-st.caption('쉼터 정보는 행정안전부/지자체 공식 자료만 사용합니다. 지도에 보이는 위치와 실제 운영 여부는 다를 수 있으니 방문 전에 확인하세요.')
-st.markdown('[전국무더위쉼터표준데이터 (공공데이터포털)](https://www.data.go.kr/data/15013199/standard.do)')
-st.write('**내 위치 표시**: 버튼을 누르면 브라우저가 위치 권한을 요청합니다. 위치는 지도와 거리 계산에만 사용합니다.')
-if 'geo_enabled' not in st.session_state:
-    st.session_state.geo_enabled = False
-if 'geo_coords' not in st.session_state:
-    st.session_state.geo_coords = None
-left, right = st.columns([2, 1])
-with left:
-    if st.button('📍 내 위치 가져오기', type='primary', use_container_width=True):
-        st.session_state.geo_enabled = True
-with right:
-    if st.button('위치 표시 해제', use_container_width=True):
-        st.session_state.geo_enabled = False
-        st.session_state.geo_coords = None
+st.header('4. 전국 기상 안전시설 지도')
+st.caption('전국 공식 좌표 데이터가 있는 시설만 표시합니다. 운영 여부와 개방시간은 방문 전에 확인하세요.')
+if 'geo_enabled' not in st.session_state: st.session_state.geo_enabled=False
+if 'geo_coords' not in st.session_state: st.session_state.geo_coords=None
+c1,c2=st.columns(2)
+with c1:
+    if st.button('📍 내 위치 표시',use_container_width=True,key='geo_start'): st.session_state.geo_enabled=True
+with c2:
+    if st.button('위치 표시 해제',use_container_width=True,key='geo_stop'):
+        st.session_state.geo_enabled=False
+        st.session_state.geo_coords=None
 if st.session_state.geo_enabled:
-    st.caption('위치 요청 창이 나타나면 허용을 누르세요. GPS가 켜져 있어야 합니다.')
     try:
-        location = streamlit_geolocation()
-        if isinstance(location, dict) and location.get('latitude') is not None and location.get('longitude') is not None:
-            lat, lon = float(location['latitude']), float(location['longitude'])
-            if -90 <= lat <= 90 and -180 <= lon <= 180:
-                st.session_state.geo_coords = (lat, lon)
-    except Exception as exc:
-        st.warning('위치 구성요소를 불러오지 못했습니다. 페이지를 새로고침하고 다시 시도하세요.')
-user_lat = user_lon = None
-if st.session_state.geo_enabled and st.session_state.geo_coords is not None:
-    user_lat, user_lon = st.session_state.geo_coords
-    st.success('현재 위치를 확인했습니다. 지도에서 파란색 점으로 표시합니다.')
-elif st.session_state.geo_enabled:
-    st.warning('위치 응답을 기다리는 중입니다. 태블릿의 위치 서비스와 Chrome 사이트 위치 권한을 확인한 뒤 새로고침해 보세요.')
-else:
-    st.info('위치 확인은 선택 사항입니다. 현재는 칠성동 중심 지도를 표시합니다.')
-shelter_path=Path(__file__).parent/'data'/'shelters.csv'
-sh=None
-if shelter_path.exists():
-    try:sh=parse_shelters(shelter_path.read_bytes())
-    except Exception:st.warning('저장소의 쉼터 CSV 형식을 확인하세요.')
-if sh is None:
-    with st.expander('운영자용 공식 쉼터 CSV 시험 업로드'):
-        uploaded=st.file_uploader('쉼터명/주소/위도/경도 열이 있는 공식 CSV',type='csv',key='shelter_csv')
-        if uploaded:
-            try:sh=parse_shelters(uploaded.getvalue())
-            except ValueError as exc:st.warning(str(exc))
-    st.caption('방문자 모두에게 쉼터를 자동 표시하려면 공식 CSV를 GitHub의 data/shelters.csv에 저장하세요. 이 페이지에서 올린 파일은 영구 저장되지 않습니다.')
-# Map always renders, even without shelter data.
-center_lat,center_lon=(user_lat,user_lon) if user_lat is not None else (35.879,128.602)
-if sh is not None and len(sh):
-    st.success(f'공식 쉼터 좌표 {len(sh):,}개 연결됨')
-    if user_lat is not None:
-        sh=sh.copy();sh['직선거리(km)']=distances_km(sh,user_lat,user_lon).round(2)
-        sh=sh.sort_values('직선거리(km)')
-        st.subheader('현재 위치에서 가까운 쉼터')
-        st.dataframe(sh[['이름','주소','운영정보','직선거리(km)']].head(30),hide_index=True,use_container_width=True)
-        st.caption('표시된 거리는 직선거리이며 실제 도보 이동거리와 다릅니다.')
-    else:
-        st.dataframe(sh[['이름','주소','운영정보']].head(40),hide_index=True,use_container_width=True)
-else:
-    st.warning('공식 쉼터 CSV가 없어 쉼터 점을 표시할 수 없습니다. 확인되지 않은 쉼터를 임의로 표시하지 않습니다.')
-layers=[]
-if sh is not None and len(sh):
-    layers.append(pdk.Layer('ScatterplotLayer',sh,get_position='[lon, lat]',get_fill_color='[235, 96, 63, 210]',get_radius=7,radius_min_pixels=5,radius_max_pixels=9,pickable=True))
-if user_lat is not None:
-    layers.append(pdk.Layer('ScatterplotLayer',pd.DataFrame([{'lat':user_lat,'lon':user_lon,'이름':'내 위치','주소':'사용자 기기 위치','운영정보':''}]),get_position='[lon, lat]',get_fill_color='[30, 110, 240, 230]',get_radius=8,radius_min_pixels=6,radius_max_pixels=10,pickable=True))
-view=pdk.ViewState(latitude=center_lat,longitude=center_lon,zoom=12.5 if user_lat is None else 13.5,pitch=0)
-st.pydeck_chart(pdk.Deck(map_style=None,initial_view_state=view,layers=layers,tooltip={'text':'{이름}\n{주소}\n{운영정보}'}),use_container_width=True)
-st.caption('주황색: 공식 자료의 무더위쉼터 / 파란색: 권한을 허용한 사용자의 현재 위치. 위치 정확도는 기기와 브라우저에 따라 달라집니다.')
+        loc=streamlit_geolocation()
+        if isinstance(loc,dict) and loc.get('latitude') is not None and loc.get('longitude') is not None:
+            st.session_state.geo_coords=(float(loc['latitude']),float(loc['longitude']))
+    except Exception: st.info('브라우저 위치 권한을 확인하세요.')
+user_lat=user_lon=None
+if st.session_state.geo_enabled and st.session_state.geo_coords:
+    user_lat,user_lon=st.session_state.geo_coords
 
+datasets=[]
+base=Path(__file__).parent/'data'
+for filename,kind in [('shelters.csv','무더위쉼터'),('cold_shelters.csv','한파쉼터'),('evacuation.csv','민방위 대피시설'),('hospitals.csv','응급의료기관'),('safety_facilities.csv','기타 안전시설')]:
+    file=base/filename
+    if file.exists():
+        try: datasets.append(parse_facilities(file.read_bytes(),kind))
+        except ValueError as exc: st.warning(f'{filename}: {exc}')
+with st.expander('공식 전국 시설 CSV 추가 (운영자용)',expanded=False):
+    kind=st.selectbox('자료 유형',list(CATEGORIES),key='facility_kind')
+    uploaded=st.file_uploader('시설명·위도·경도가 있는 공식 CSV',type=['csv'],key='facility_upload')
+    if uploaded:
+        try: datasets.append(parse_facilities(uploaded.getvalue(),kind))
+        except ValueError as exc: st.warning(str(exc))
+    st.caption('업로드 자료는 현재 세션에서만 표시됩니다. 모든 방문자에게 제공하려면 data/ 폴더에 해당 CSV를 저장하세요.')
+if datasets:
+    facilities=pd.concat(datasets,ignore_index=True).drop_duplicates(['이름','lat','lon','종류'])
+    kinds=sorted(facilities['종류'].dropna().unique().tolist())
+    selected_kinds=st.multiselect('지도에 표시할 시설',kinds,default=kinds,key='map_facility_types')
+    facilities=facilities[facilities['종류'].isin(selected_kinds)].copy()
+else:
+    facilities=pd.DataFrame(columns=['이름','주소','종류','lat','lon'])
+    st.info('현재 등록된 시설 데이터가 없습니다. 전국 공식 시설 CSV를 추가하면 지도에 표시됩니다.')
+center_lat,center_lon=(user_lat,user_lon) if user_lat is not None else (35.879,128.602)
+if len(facilities):
+    if user_lat is not None:
+        facilities['직선거리(km)']=distances_km(facilities,user_lat,user_lon)
+        nearby=facilities.nsmallest(20,'직선거리(km)')
+        st.dataframe(nearby[['종류','이름','주소','직선거리(km)']],hide_index=True,use_container_width=True)
+    else:
+        st.caption(f'표시 시설: {len(facilities):,}곳 · 지도 확대/이동으로 확인하세요.')
+colors={'무더위쉼터':[234,100,65,205],'한파쉼터':[42,123,224,205],
+        '민방위 대피시설':[127,87,192,205],'응급의료기관':[221,62,87,205],
+        '기타 안전시설':[63,153,116,205]}
+layers=[]
+for kind,color in colors.items():
+    subset=facilities[facilities['종류']==kind]
+    if not subset.empty:
+        layers.append(pdk.Layer('ScatterplotLayer',subset,get_position='[lon,lat]',
+          get_fill_color=color,get_radius=7,radius_min_pixels=4,radius_max_pixels=9,pickable=True))
+if user_lat is not None:
+    layers.append(pdk.Layer('ScatterplotLayer',pd.DataFrame([{'lat':user_lat,'lon':user_lon,'이름':'내 위치','주소':'','종류':'내 위치'}]),
+        get_position='[lon,lat]',get_fill_color=[20,85,250,235],get_radius=9,radius_min_pixels=7,pickable=True))
+st.pydeck_chart(pdk.Deck(map_style=None,initial_view_state=pdk.ViewState(
+    latitude=center_lat,longitude=center_lon,zoom=11 if user_lat is not None else 6,pitch=0),
+    layers=layers,tooltip={'text':'{종류}\\n{이름}\\n{주소}'}),use_container_width=True)
+st.caption('주황: 무더위쉼터 · 파랑: 한파쉼터 · 보라: 대피시설 · 빨강: 응급의료기관 · 초록: 기타 시설 · 진한 파랑: 내 위치')
 st.header('5. 사계절 위험기상 행동요령 (상세)')
 st.caption('일상에서 실천할 수 있는 폭염 대응 방법입니다. 실제 행동은 기상청 공식 특보와 현장 상황을 우선하세요.')
 with st.expander('☀️ 외출 전과 야외활동 중', expanded=True):
