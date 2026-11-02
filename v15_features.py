@@ -53,15 +53,19 @@ def climate_report(raw):
     x=raw.copy()
     # Existing fetch_asos produces datetime index and normalized tmax/tmin/rain.
     names={'date':['tm','date','날짜','일시'],'rain':['rain','sumRn','일강수량(mm)','일강수량','강수량(mm)'],'tmax':['tmax','maxTa','최고기온(°C)','최고기온'],'tmin':['tmin','minTa','최저기온(°C)','최저기온']}
+    # Build by position, never by an inherited DatetimeIndex named 'date'.
+    # This prevents ambiguous date labels and accidental pandas index alignment.
     d={}
     for k,aliases in names.items():
         found=next((c for c in aliases if c in x.columns),None)
-        if found is not None:d[k]=x[found]
-        elif k=='date' and isinstance(x.index,pd.DatetimeIndex):d[k]=pd.Series(x.index,index=x.index)
-    if 'date' not in d or 'rain' not in d:raise ValueError('날짜와 일강수량 열이 필요합니다.')
-    # A datetime index named 'date' and a 'date' column conflict in pandas sort_values.
-    # Normalize to a plain RangeIndex before sorting/grouping.
-    frame=pd.DataFrame(d).reset_index(drop=True)
+        if found is not None:
+            d[k]=x[found].to_numpy()
+        elif k=='date' and isinstance(x.index,pd.DatetimeIndex):
+            d[k]=x.index.to_numpy()
+    if 'date' not in d or 'rain' not in d:
+        raise ValueError('날짜와 일강수량 열이 필요합니다.')
+    frame=pd.DataFrame(d, index=pd.RangeIndex(len(x)))
+    frame.index.name=None
     frame['date']=pd.to_datetime(frame.date,errors='coerce')
     for k in ('rain','tmax','tmin'):
         if k in frame:frame[k]=pd.to_numeric(frame[k],errors='coerce')

@@ -1,6 +1,7 @@
 """칠성동 AI 폭염 안전지킴이: official forecast + validated research ML."""
 from pathlib import Path
 import json
+import re
 import joblib
 import requests
 from datetime import date, timedelta
@@ -87,6 +88,16 @@ if page=='홈':
                 except Exception: pass
             st.write(f'{label}: '+('설정됨' if available else '설정 확인 필요'))
         st.caption('인증키 값은 표시하지 않습니다. 일부 서비스는 API 승인 범위에 따라 이용이 제한될 수 있습니다.')
+
+def safe_error(exc):
+    """Never show API request URLs or service keys in the UI."""
+    if isinstance(exc, requests.exceptions.HTTPError):
+        status=getattr(getattr(exc,'response',None),'status_code',None)
+        return f'외부 API 요청 실패 (HTTP {status or "오류"}). 서비스 이용 승인과 인증키를 확인하세요.'
+    message=str(exc)
+    message=re.sub(r'https?://[^\s\'\"<>]+','[요청 URL 숨김]',message)
+    message=re.sub(r'(?i)(servicekey|apikey|api_key|authorization)(\s*[=:]\s*)[^\s&,;]+',r'\1\2[숨김]',message)
+    return message[:280]
 
 def secret(name):
     try: return str(st.secrets.get(name,'')).strip()
@@ -241,7 +252,7 @@ if page=='기후 장기 분석':
                 st.line_chart(yearly.set_index('연도')[[c for c in ['연강수량(mm)','강한비 일수(30mm 이상)','평균 최고기온(°C)'] if c in yearly]])
                 st.dataframe(yearly,hide_index=True,use_container_width=True)
                 st.download_button('연도별 분석 CSV',yearly.to_csv(index=False).encode('utf-8-sig'),'climate_yearly.csv','text/csv')
-        except Exception as exc:st.warning(f'기후 분석 오류: {exc}')
+        except Exception as exc:st.warning('기후 분석 오류: '+safe_error(exc))
 
 if page=='맞춤 알림':
     st.subheader('관심 지역 기상 주의 알림')
@@ -308,7 +319,7 @@ if page=='날씨 예측':
                     st.dataframe(hourly_extremes(hourly_obs),use_container_width=True,hide_index=True)
                     st.caption('관측 결측은 강수 0mm로 임의 대체하지 않습니다. 시간순 80/20 분할·경계 6시간 제외 검증. 강한 비가 드물면 모델이 과소예측할 수 있습니다. 침수 위험을 직접 판단하지 마세요.')
                 except Exception as exc:
-                    st.warning(f'시간당 강수 AI 실행 실패: {type(exc).__name__}: {exc}')
+                    st.warning('시간당 강수 AI 실행 실패: '+safe_error(exc))
     if weather_section=='기본 정보':
         national_key=secret('KMA_FORECAST_KEY')
         if national_key:

@@ -30,7 +30,10 @@ def fetch_hourly_asos(key, station_id, days=90):
                     'startHh':cursor.strftime('%H'),'endDt':stop.strftime('%Y%m%d'),
                     'endHh':stop.strftime('%H'),'stnIds':str(station_id)}
             response=requests.get(URL,params=params,timeout=35)
-            response.raise_for_status()
+            if response.status_code in (401,403):
+                raise PermissionError('ASOS 시간자료 API 접근이 거부되었습니다(HTTP 401/403). 공공데이터포털에서 ASOS 시간자료 서비스 활용신청 승인, 인증키 유형, 호출 한도를 확인하세요. 인증키는 화면에 표시하지 않습니다.')
+            if response.status_code >= 400:
+                raise ConnectionError(f'ASOS 시간자료 조회 실패(HTTP {response.status_code}). API 승인 상태와 요청 조건을 확인하세요.')
             try:
                 obj=response.json()['response']
                 if str(obj['header']['resultCode'])!='00':
