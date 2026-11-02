@@ -23,10 +23,12 @@ from nationwide_ml import STATIONS, fetch_station_observations, train_and_predic
 from nationwide_7day import seven_day_models, daily_rain_extremes
 from hourly_rain_ai import fetch_hourly_asos, forecast_hourly_rain, hourly_extremes
 from climate_risks import weather_risks, historical_baseline, historical_extremes
+from v15_features import closest_region, forecast_risk, region_risk_frame, climate_report, explain_model, evaluate_alerts
 
 st.set_page_config(page_title='칠성동 AI 기후 안전지킴이', page_icon=None, layout='wide', initial_sidebar_state='expanded')
 st.markdown("""<style>
 .block-container {max-width:1180px;padding-top:1.5rem;padding-bottom:3rem;}
+@media (max-width: 700px) {.block-container {padding-left:.85rem;padding-right:.85rem;padding-top:.6rem;} h1{font-size:1.5rem!important;} [data-testid=stHorizontalBlock]{gap:.65rem;} .nav-card{min-height:85px!important;padding:12px!important;}}
 h1 {font-size:2rem!important;letter-spacing:-.035em;} h2 {font-size:1.45rem!important;}
 [data-testid="stMetric"] {background:rgba(128,128,128,.05);border:1px solid rgba(128,128,128,.16);padding:12px 16px;border-radius:10px;}
 [data-testid="stExpander"], [data-testid="stAlert"] {border-radius:10px;}
@@ -34,7 +36,7 @@ h1 {font-size:2rem!important;letter-spacing:-.035em;} h2 {font-size:1.45rem!impo
 .nav-card {border:1px solid rgba(128,128,128,.18);border-radius:12px;padding:18px;margin-bottom:10px;min-height:125px;}
 .nav-card h3 {margin:0 0 9px 0!important;} .nav-card p {margin:0;color:gray;font-size:.92rem;}
 </style>""",unsafe_allow_html=True)
-PAGES=['홈','날씨 예측','기온 예측','안전시설 지도']
+PAGES=['홈','내 지역 대시보드','날씨 예측','기온 예측','전국 호우 위험 지도','기후 장기 분석','안전시설 지도','맞춤 알림']
 if 'current_page' not in st.session_state: st.session_state.current_page='홈'
 with st.sidebar:
     st.markdown('### 칠성동 AI 기후 안전지킴이')
@@ -51,14 +53,23 @@ if page!='홈':
 if page=='홈':
     st.markdown('### 필요한 정보만 빠르게 확인하세요')
     st.write('왼쪽 메뉴에서 원하는 기능을 선택하거나 아래 바로가기를 이용할 수 있습니다.')
-    c1,c2,c3=st.columns(3)
-    cards=[('날씨 예측','강수 확률, 시간별 강수 AI, 기상청 예보 비교'),('기온 예측','전국 7일 기온 AI, 대구 장기 분석, 정확도 기록'),('안전시설 지도','무더위쉼터, 한파쉼터, 내 위치와 행동요령')]
-    for col,(name,desc) in zip((c1,c2,c3),cards):
+    cards=[('내 지역 대시보드','위치 기반 지역 선택과 간편 예보'),('날씨 예측','강수 확률, 시간별 강수 AI, 기상청 예보 비교'),('기온 예측','전국 7일 기온 AI, 대구 장기 분석, 정확도 기록'),('전국 호우 위험 지도','공식 예보 기반 지역별 강수 주의 지표'),('기후 장기 분석','관측자료 기간별 비교와 변화 그래프'),('안전시설 지도','무더위쉼터, 한파쉼터, 내 위치와 행동요령'),('맞춤 알림','관심 지역과 주의 기준 설정')]
+    for col,(name,desc) in zip(st.columns(2),cards[:2]):
         with col:
             st.markdown(f'<div class="nav-card"><h3>{name}</h3><p>{desc}</p></div>',unsafe_allow_html=True)
             if st.button(f'{name} 열기',key=f'go_{name}',use_container_width=True):
                 st.session_state.current_page=name
                 st.rerun()
+    for col,(name,desc) in zip(st.columns(2),cards[2:4]):
+        with col:
+            st.markdown(f'<div class="nav-card"><h3>{name}</h3><p>{desc}</p></div>',unsafe_allow_html=True)
+            if st.button(f'{name} 열기',key=f'go_{name}',use_container_width=True):
+                st.session_state.current_page=name;st.rerun()
+    for col,(name,desc) in zip(st.columns(3),cards[4:]):
+        with col:
+            st.markdown(f'<div class="nav-card"><h3>{name}</h3><p>{desc}</p></div>',unsafe_allow_html=True)
+            if st.button(f'{name} 열기',key=f'go_{name}',use_container_width=True):
+                st.session_state.current_page=name;st.rerun()
     st.divider()
     st.subheader('이용 안내')
     st.markdown("""1. **날씨 예측**: 지역을 선택해 공식 예보와 강수 AI를 확인합니다.
@@ -127,6 +138,110 @@ def season_focus(forecast):
     return ('변동','최고·최저기온','이상기온·일교차·강수·강풍')
 
 forecast=None
+if page=='내 지역 대시보드':
+    st.subheader('내 지역 날씨')
+    st.caption('위치정보는 브라우저에서 권한을 허용할 때만 사용하며 서버에 별도로 저장하지 않습니다. 대표 지역 중심의 예보입니다.')
+    if st.button('현재 위치로 지역 찾기',key='v15_locate'):
+        st.session_state['v15_geolocation_requested']=True
+    if st.session_state.get('v15_geolocation_requested'):
+        try:
+            loc=streamlit_geolocation()
+            if isinstance(loc,dict) and loc.get('latitude') is not None and loc.get('longitude') is not None:
+                region,distance=closest_region(float(loc['latitude']),float(loc['longitude']),REGIONS)
+                st.session_state['v15_local_region']=region
+                st.caption(f'가장 가까운 대표 지역: {region} (직선거리 약 {distance:.1f}km). 실제 현재 위치의 정밀 예보가 아닙니다.')
+        except Exception as exc:st.info(f'위치 권한 또는 브라우저 환경을 확인하세요: {exc}')
+    region=st.selectbox('지역 직접 선택',list(REGIONS),index=list(REGIONS).index(st.session_state.get('v15_local_region','대구')) if st.session_state.get('v15_local_region','대구') in REGIONS else 0,key='v15_local_choice')
+    key=secret('KMA_FORECAST_KEY')
+    if key:
+        try:
+            f,issued,grid_n=nationwide_forecast(key,region)
+            r=forecast_risk(f)
+            st.caption(f'기상청 발표: {issued:%Y-%m-%d %H:%M} · {region} 대표 격자')
+            a,b,c=st.columns(3)
+            a.metric('최고 강수확률',f"{r['max_pop']:.0f}%" if pd.notna(r['max_pop']) else '자료 없음')
+            b.metric('예보상 강수 강도',r['label'])
+            c.metric('예보 시간 수',str(r['hours']))
+            st.dataframe(rain_summary(f).head(18),hide_index=True,use_container_width=True)
+            st.caption('기상청 단기예보이며 AI 예측 결과와는 별도입니다. 강수량 범위 표기는 임의로 수치화하지 않습니다.')
+        except Exception as exc:st.warning(f'지역 예보 조회 실패: {exc}')
+    else:st.info('KMA_FORECAST_KEY를 설정하면 해당 지역의 공식 예보가 표시됩니다.')
+    a,b=st.columns(2)
+    with a:
+        if st.button('날씨 AI 상세로 이동',use_container_width=True):st.session_state.current_page='날씨 예측';st.rerun()
+    with b:
+        if st.button('안전시설 확인',use_container_width=True):st.session_state.current_page='안전시설 지도';st.rerun()
+
+if page=='전국 호우 위험 지도':
+    st.subheader('전국 강수 주의 지도')
+    st.caption('기상청 단기예보의 강수확률·시간강수량을 요약한 참고 지표입니다. 공식 호우특보, 실제 침수위험도 또는 AI 호우 예측 지도가 아닙니다.')
+    key=secret('KMA_FORECAST_KEY')
+    if not key:st.info('KMA_FORECAST_KEY가 필요합니다.')
+    elif st.button('전국 대표 지역 30곳 분석 시작',key='v15_risk_run',type='primary'):
+        results=[];progress=st.progress(0)
+        for i,(region,(lat,lon)) in enumerate(REGIONS.items()):
+            try:
+                f,issued,_=nationwide_forecast(key,region)
+                score=forecast_risk(f)
+                results.append({'지역':region,'lat':lat,'lon':lon,'강수확률 최고(%)':score['max_pop'],'강수량 최대(mm)':score['max_rain'],'지표':score['label'],'수준':score['level'],'예보 발표':str(issued)})
+            except Exception:pass
+            progress.progress((i+1)/len(REGIONS))
+        st.session_state['v15_risk_results']=results
+    if st.session_state.get('v15_risk_results'):
+        frame=region_risk_frame(st.session_state['v15_risk_results'])
+        st.caption(f'정상 조회 지역 {len(frame)}곳 / 전체 {len(REGIONS)}곳 · 각 지역 공식 격자예보 기반')
+        st.pydeck_chart(pdk.Deck(map_style=None,initial_view_state=pdk.ViewState(latitude=36.2,longitude=127.8,zoom=6),layers=[pdk.Layer('ScatterplotLayer',frame,get_position='[lon,lat]',get_fill_color='color',get_radius=18000,radius_min_pixels=6,radius_max_pixels=22,pickable=True)],tooltip={'text':'{지역}\n{지표}\n강수확률 최고: {강수확률 최고(%)}%'}),use_container_width=True)
+        st.dataframe(frame.drop(columns=['lat','lon','color']),hide_index=True,use_container_width=True)
+        st.download_button('지도 결과 CSV',frame.drop(columns=['color']).to_csv(index=False).encode('utf-8-sig'),'rain_risk_regions.csv','text/csv')
+        st.caption('빨강: 높은 강수 주의 지표, 주황: 주의, 파랑: 낮음, 회색: 판단 자료 부족. 임계값은 연구용이며 특보 기준이 아닙니다.')
+
+if page=='기후 장기 분석':
+    st.subheader('관측자료 기반 기후 장기 비교')
+    st.caption('과거와 최근의 관측값을 같은 연수로 비교합니다. 기후변화 원인을 단정하지 않으며, 관측소 자료는 주변 모든 지역을 대표하지 않습니다.')
+    st.write('날짜·일강수량·최고기온·최저기온 열이 있는 공식 ASOS CSV를 업로드하세요. 자료가 없으면 기상청 API를 통해 대구 관측자료를 조회할 수 있습니다.')
+    uploaded=st.file_uploader('관측 CSV (10년 이상 권장)',type=['csv'],key='v15_climate_file')
+    climate_raw=None
+    if uploaded:
+        try:climate_raw=pd.read_csv(uploaded)
+        except UnicodeDecodeError:
+            uploaded.seek(0);climate_raw=pd.read_csv(uploaded,encoding='cp949')
+    elif st.button('기존 대구 20년 관측자료 조회',key='v15_climate_load'):
+        k=secret('KMA_ASOS_KEY') or secret('ASOS_SERVICE_KEY')
+        if not k:st.warning('KMA_ASOS_KEY 또는 ASOS_SERVICE_KEY가 필요합니다.')
+        else:
+            try:st.session_state['v15_climate_asos']=cached_asos(k)
+            except Exception as exc:st.warning(f'ASOS 조회 실패: {exc}')
+    if climate_raw is None:climate_raw=st.session_state.get('v15_climate_asos')
+    if climate_raw is not None:
+        try:
+            summary,yearly=climate_report(climate_raw)
+            st.dataframe(summary,hide_index=True,use_container_width=True)
+            if not yearly.empty:
+                st.line_chart(yearly.set_index('연도')[[c for c in ['연강수량(mm)','강한비 일수(30mm 이상)','평균 최고기온(°C)'] if c in yearly]])
+                st.dataframe(yearly,hide_index=True,use_container_width=True)
+                st.download_button('연도별 분석 CSV',yearly.to_csv(index=False).encode('utf-8-sig'),'climate_yearly.csv','text/csv')
+        except Exception as exc:st.warning(f'기후 분석 오류: {exc}')
+
+if page=='맞춤 알림':
+    st.subheader('관심 지역 기상 주의 알림')
+    st.caption('웹페이지를 열고 확인할 때 작동하는 앱 내 알림입니다. 브라우저를 닫은 상태의 푸시·문자·이메일 발송은 지원하지 않습니다.')
+    region=st.selectbox('관심 지역',list(REGIONS),key='v15_alert_region')
+    pop=st.slider('강수확률 주의 기준 (%)',30,100,70,5,key='v15_alert_pop')
+    high=st.slider('고온 참고 기준 (°C)',25,40,33,1,key='v15_alert_hot')
+    low=st.slider('저온 참고 기준 (°C)',-20,5,-5,1,key='v15_alert_cold')
+    if st.button('선택 지역 예보 확인 및 기준 검사',type='primary'):
+        k=secret('KMA_FORECAST_KEY')
+        if not k:st.info('KMA_FORECAST_KEY가 필요합니다.')
+        else:
+            try:
+                f,issued,_=nationwide_forecast(k,region)
+                messages=evaluate_alerts(f,pop,high,low)
+                st.caption(f'예보 발표: {issued:%Y-%m-%d %H:%M} · 공식 특보 아님')
+                if messages:
+                    for message in messages:st.warning(message)
+                else:st.success('현재 조회된 예보에서 설정 기준을 넘는 항목이 없습니다. 위험이 없음을 보장하지 않습니다.')
+            except Exception as exc:st.warning(f'예보 확인 실패: {exc}')
+
 if page=='날씨 예측':
     st.header('전국 날씨 예측')
     st.caption('전국 공식 격자예보 + 관측소별 독립 AI 1일 예측 · 실제 시간순 검증. 지역별 관측소가 없는 경우 AI는 제공하지 않습니다.')
@@ -247,6 +362,21 @@ if page=='날씨 예측':
             except Exception as exc:
                 st.warning(f'지역 AI 분석을 실행하지 못했습니다: {type(exc).__name__}: {exc}')
 
+    if weather_section=='AI 상세 분석':
+        with st.expander('AI 예측 근거 살펴보기 (실제 모델 변수 영향도)'):
+            st.caption('선택 지역의 최근 관측자료로 별도 검증 모델을 학습하고, 미학습 기간에서 변수 순열 중요도를 계산합니다. 원래 예측 모델의 개별 예측 설명이나 인과관계 증명이 아닙니다.')
+            explain_key=secret('KMA_ASOS_KEY') or secret('ASOS_SERVICE_KEY')
+            if selected_region not in STATIONS:st.info('해당 지역의 ASOS 대표 관측소가 없습니다.')
+            elif not explain_key:st.info('ASOS API 키가 필요합니다.')
+            elif st.button('모델 변수 영향도 계산',key='v15_explain_run'):
+                try:
+                    obs=fetch_station_observations(explain_key,STATIONS[selected_region][0])
+                    imp,score=explain_model(obs)
+                    st.metric('검증 최고기온 MAE',f'{score:.2f}°C')
+                    st.dataframe(imp,hide_index=True,use_container_width=True)
+                    st.bar_chart(imp.set_index('변수')['오차 증가(°C)'])
+                    st.caption('값이 클수록 해당 변수를 섞었을 때 예측 오차가 커졌다는 뜻입니다. 음수 값은 0으로 보정하지 않습니다.')
+                except Exception as exc:st.warning(f'변수 분석 실패: {exc}')
     if weather_section=='기후 패턴 분석':
         st.subheader('장마·단시간 강수 패턴 비교')
         st.caption('동남아 우기가 국내에 그대로 나타난다는 가정 대신, 실제 관측자료의 여름철 강수 집중도와 극한강수 일수를 비교합니다.')
