@@ -136,7 +136,7 @@ st.caption('이 결과는 기온·풍속·습도 등의 간단한 기준에 따�
 st.markdown('[기상청 공식 예보·특보 확인](https://www.weather.go.kr/)')
 
 st.header('2. AI 7일 기온 전망 · 계절별 이상기온')
-st.caption('실험적 AI 예측: 최신 대구 ASOS 관측자료 + 과거 20년 데이터로 학습합니다. 7일 예측은 최신 실측자료를 기준으로 각 날짜를 독립적으로 추정하는 직접 다중시점 모델입니다. 예측값을 다음 날 입력으로 재사용하지 않습니다. 공식 기상청 예보는 아닙니다.')
+st.caption('과거 기상자료로 학습한 AI가 향후 7일의 기온을 추정합니다. 공식 기상청 예보와는 별개입니다.')
 local=Path(__file__).parent/'data'/'asos_143.csv'
 data=None
 source=None
@@ -174,74 +174,13 @@ if data is not None and asos_key:
 if data is None:
     st.error('AI 예측용 ASOS 자료가 없습니다. ASOS_SERVICE_KEY 또는 data/asos_143.csv를 확인하세요.')
 else:
-    st.success(f'ASOS 관측자료: {source} · {data.index.min().date()} ~ {data.index.max().date()}')
+    st.caption(f'관측자료: {source} · {data.index.min().date()} ~ {data.index.max().date()}')
     try:
         manifest_path=Path(__file__).parent/'artifacts'/'manifest.json'
         manifest=json.loads(manifest_path.read_text(encoding='utf-8')) if manifest_path.exists() else None
         result=cached_model(data, manifest.get('trained_at') if manifest else None)
         if manifest:
-            st.success(f"자동 학습 모델: {manifest['trained_at']} 갱신 · 2024~2025 검증 MAE {manifest['validation_mae']:.2f}°C")
-        st.subheader('📈 과거 약 20년 최고기온 · AI 비교')
-        observed=data[['tmax']].dropna().reset_index()
-        observed.columns=['날짜','실제 최고기온']
-        observed['날짜']=pd.to_datetime(observed['날짜'])
-        st.caption('2006년 이후 대구 ASOS 143 관측소의 실제 일 최고기온입니다. 날짜 범위를 선택해 확대할 수 있습니다.')
-        years=sorted(observed['날짜'].dt.year.unique().tolist())
-        chosen_years=st.slider('관측 연도 범위',min_value=years[0],max_value=years[-1],value=(years[0],years[-1]),key='historical_years')
-        obs_view=observed[observed['날짜'].dt.year.between(*chosen_years)]
-        st.plotly_chart(px.line(obs_view,x='날짜',y='실제 최고기온',title='2006년 이후 실제 최고기온 변화'),use_container_width=True)
-        model_file=Path(__file__).parent/'artifacts'/'direct_model.joblib'
-        if model_file.exists() and manifest:
-            try:
-                history_fit=historical_model_comparison(data,model_file,model_file.stat().st_mtime_ns)
-                history_fit=history_fit[history_fit['날짜'].dt.year.between(*chosen_years)]
-                if not history_fit.empty:
-                    st.plotly_chart(px.line(history_fit,x='날짜',y=['실제 최고기온','AI 과거 재현값'],title='과거 실제 기온 vs AI 재현값 (전체 기간)'),use_container_width=True)
-                    st.caption('주의: AI 과거 재현값은 과거 전체 자료로 학습한 현재 모델을 과거 날짜에 다시 적용한 결과입니다. 당시 실제로 발표한 미래 예측이 아니며, 미래 예측 정확도 증거로 사용할 수 없습니다. 실제 미래 예측 정확도는 아래 날짜별 기록에서 확인하세요.')
-            except Exception as graph_exc:
-                st.warning(f'과거 AI 비교 그래프를 표시하지 못했습니다: {type(graph_exc).__name__}')
-        else:
-            st.info('저장된 자동 학습 모델이 아직 없어 과거 AI 재현 그래프를 표시할 수 없습니다. 실제 관측 그래프는 계속 볼 수 있습니다.')
-        st.subheader('🌡️ 계절별 이상기온 감지 · 과거 관측값 비교')
-        st.caption('같은 시기(±7일)의 이전 연도 관측자료 분포와 비교합니다. 30년 기후평년값이나 공식 이상기후 판정이 아닙니다.')
-        recent_days=data[['tmax']].dropna().tail(30)
-        baseline=historical_baseline(data,recent_days.index)
-        if not baseline.empty:
-            baseline['실제 최고기온']=recent_days.tmax.to_numpy()
-            baseline['편차']=baseline['실제 최고기온']-baseline['과거 중앙값']
-            baseline['분류']=np.where(baseline['실제 최고기온']>baseline['상위 90% 기준'],'과거 대비 높은 기온',np.where(baseline['실제 최고기온']<baseline['하위 10% 기준'],'과거 대비 낮은 기온','일반 범위'))
-            st.plotly_chart(px.line(baseline,x='날짜',y=['실제 최고기온','과거 중앙값','상위 90% 기준','하위 10% 기준'],title='최근 30개 관측일의 최고기온과 과거 같은 시기 비교'),use_container_width=True)
-            st.dataframe(baseline[['날짜','실제 최고기온','과거 중앙값','편차','분류']].tail(12).sort_values('날짜',ascending=False),hide_index=True,use_container_width=True)
-        st.subheader('📊 연도별 극한기온 발생 일수')
-        extremes=historical_extremes(data)
-        counts=['33°C 이상 일수','30°C 이상 일수']
-        if '최저기온 관측일수' in extremes and extremes['최저기온 관측일수'].sum()>0:
-            counts+=['0°C 미만 일수','-12°C 이하 일수']
-        st.plotly_chart(px.line(extremes,x='연도',y=counts,markers=True,title='연도별 기온 기준 초과 일수'),use_container_width=True)
-        st.caption('관측일수가 부족한 해의 발생 일수는 실제보다 작을 수 있습니다. 최저기온 자료가 없는 경우 추위 관련 지표는 생략합니다.')
-        st.subheader('🔮 AI 7일 최고기온의 과거 대비 이상고온·이상저온 가능성')
-        st.caption('AI 최고기온 예측을 과거 같은 시기의 기온 분포와 비교한 참고 분석입니다. 별도의 이상기후 예측 AI는 아닙니다.')
-        try:
-            risk_week=predict_seven_days(result)
-            future_baseline=historical_baseline(data,pd.to_datetime(risk_week['날짜']))
-            if not future_baseline.empty:
-                future_baseline['AI 최고기온 예측']=pd.to_numeric(risk_week['AI 예상 최고기온(°C)'],errors='coerce').to_numpy()
-                future_baseline['비교 결과']=np.where(future_baseline['AI 최고기온 예측']>future_baseline['상위 90% 기준'],'과거 대비 고온 가능',np.where(future_baseline['AI 최고기온 예측']<future_baseline['하위 10% 기준'],'과거 대비 저온 가능','일반 범위'))
-                st.dataframe(future_baseline[['날짜','AI 최고기온 예측','과거 중앙값','비교 결과']],hide_index=True,use_container_width=True)
-        except (ValueError, KeyError, TypeError) as exc:
-            st.info(f'AI 이상기온 비교 준비 중: {type(exc).__name__}')
-        st.subheader('AI 모델 검증 성능')
-        st.caption('자동 학습 모델의 MAE는 2024~2025년 자료에 대한 1~11일 직접 예측 통합 검증값입니다. 개별 예측일의 정확도나 미래 성능을 보장하지 않습니다. 기존 모델 모드에서는 아래에 1일 예측 검증값이 표시됩니다.')
-        if not result['metrics'].empty:
-            st.dataframe(result['metrics'],hide_index=True,use_container_width=True)
-        ev=result['evaluation'];selected=result['selected']
-        if not ev.empty:
-            view=ev[ev['model']==selected].copy()
-            st.plotly_chart(px.line(view,x='date',y=['actual','pred'],title=f'{selected} 시간순 검증: 실제값 vs 예측값 (전체 검증기간)'),use_container_width=True)
-        yearly=pd.DataFrame({'연도':data.index.year,'폭염일':(data.tmax>=33).fillna(False).astype(int).to_numpy()})
-        yearly=yearly.groupby('연도',as_index=False)['폭염일'].sum().rename(columns={'폭염일':'33°C 이상 일수'})
-        with st.expander('여름철 폭염일수 그래프 보기',expanded=season_focus(forecast)[0]=='고온'):
-            st.plotly_chart(px.bar(yearly,x='연도',y='33°C 이상 일수',title='대구 ASOS 연도별 33°C 이상 일수'),use_container_width=True)
+            st.caption(f"AI 모델 갱신: {manifest['trained_at']} · 검증 평균오차 {manifest['validation_mae']:.2f}°C")
         st.subheader('AI 7일 기온 예측')
         try:
             week=predict_seven_days(result)
@@ -271,14 +210,72 @@ else:
                     meta=json.loads(min_meta.read_text(encoding='utf-8'))
                     st.write(f'최저기온 모델: 2024~2025 검증 MAE {meta["validation_mae"]:.2f}°C')
             st.download_button('AI 7일 예측 CSV 내려받기',week.to_csv(index=False).encode('utf-8-sig'),'ai_7day.csv','text/csv')
-            st.info('AI 예측값을 다음 날 입력으로 재사용하지 않는 직접 예측 방식입니다. 다만 먼 날짜의 예측은 불확실성이 클 수 있으며 공식 폭염특보를 대신하지 않습니다.')
-            st.download_button('AI 7일 예측 CSV 내려받기',week.to_csv(index=False).encode('utf-8-sig'),'ai_7day.csv','text/csv')
+            st.caption('예측일이 멀수록 불확실성이 커질 수 있습니다. 공식 기상특보를 우선 확인하세요.')
+
         except ValueError as exc:
             st.error(str(exc))
         if not result['metrics'].empty:
             st.download_button('AI 검증 지표 CSV 내려받기',result['metrics'].to_csv(index=False).encode('utf-8-sig'),'ai_validation.csv','text/csv')
     except Exception as exc:
         st.error(f'AI 학습/검증 오류: {type(exc).__name__}. 관측자료 누락 및 model.py 버전을 확인하세요.')
+
+with st.expander('📊 20년 기후 분석 · 과거 AI 비교 · 상세 검증', expanded=False):
+            observed=data[['tmax']].dropna().reset_index()
+            observed.columns=['날짜','실제 최고기온']
+            observed['날짜']=pd.to_datetime(observed['날짜'])
+            st.caption('2006년 이후 대구 ASOS 143 관측소의 실제 일 최고기온입니다. 날짜 범위를 선택해 확대할 수 있습니다.')
+            years=sorted(observed['날짜'].dt.year.unique().tolist())
+            chosen_years=st.slider('관측 연도 범위',min_value=years[0],max_value=years[-1],value=(years[0],years[-1]),key='historical_years')
+            obs_view=observed[observed['날짜'].dt.year.between(*chosen_years)]
+            st.plotly_chart(px.line(obs_view,x='날짜',y='실제 최고기온',title='2006년 이후 실제 최고기온 변화'),use_container_width=True)
+            model_file=Path(__file__).parent/'artifacts'/'direct_model.joblib'
+            if model_file.exists() and manifest:
+                try:
+                    history_fit=historical_model_comparison(data,model_file,model_file.stat().st_mtime_ns)
+                    history_fit=history_fit[history_fit['날짜'].dt.year.between(*chosen_years)]
+                    if not history_fit.empty:
+                        st.plotly_chart(px.line(history_fit,x='날짜',y=['실제 최고기온','AI 과거 재현값'],title='과거 실제 기온 vs AI 재현값 (전체 기간)'),use_container_width=True)
+                        st.caption('주의: AI 과거 재현값은 과거 전체 자료로 학습한 현재 모델을 과거 날짜에 다시 적용한 결과입니다. 당시 실제로 발표한 미래 예측이 아니며, 미래 예측 정확도 증거로 사용할 수 없습니다. 실제 미래 예측 정확도는 아래 날짜별 기록에서 확인하세요.')
+                except Exception as graph_exc:
+                    st.warning(f'과거 AI 비교 그래프를 표시하지 못했습니다: {type(graph_exc).__name__}')
+            else:
+                st.info('저장된 자동 학습 모델이 아직 없어 과거 AI 재현 그래프를 표시할 수 없습니다. 실제 관측 그래프는 계속 볼 수 있습니다.')
+            st.subheader('🌡️ 계절별 이상기온 감지 · 과거 관측값 비교')
+            st.caption('같은 시기(±7일)의 이전 연도 관측자료 분포와 비교합니다. 30년 기후평년값이나 공식 이상기후 판정이 아닙니다.')
+            recent_days=data[['tmax']].dropna().tail(30)
+            baseline=historical_baseline(data,recent_days.index)
+            if not baseline.empty:
+                baseline['실제 최고기온']=recent_days.tmax.to_numpy()
+                baseline['편차']=baseline['실제 최고기온']-baseline['과거 중앙값']
+                baseline['분류']=np.where(baseline['실제 최고기온']>baseline['상위 90% 기준'],'과거 대비 높은 기온',np.where(baseline['실제 최고기온']<baseline['하위 10% 기준'],'과거 대비 낮은 기온','일반 범위'))
+                st.plotly_chart(px.line(baseline,x='날짜',y=['실제 최고기온','과거 중앙값','상위 90% 기준','하위 10% 기준'],title='최근 30개 관측일의 최고기온과 과거 같은 시기 비교'),use_container_width=True)
+                st.dataframe(baseline[['날짜','실제 최고기온','과거 중앙값','편차','분류']].tail(12).sort_values('날짜',ascending=False),hide_index=True,use_container_width=True)
+            st.subheader('📊 연도별 극한기온 발생 일수')
+            extremes=historical_extremes(data)
+            counts=['33°C 이상 일수','30°C 이상 일수']
+            if '최저기온 관측일수' in extremes and extremes['최저기온 관측일수'].sum()>0:
+                counts+=['0°C 미만 일수','-12°C 이하 일수']
+            st.plotly_chart(px.line(extremes,x='연도',y=counts,markers=True,title='연도별 기온 기준 초과 일수'),use_container_width=True)
+            st.caption('관측일수가 부족한 해의 발생 일수는 실제보다 작을 수 있습니다. 최저기온 자료가 없는 경우 추위 관련 지표는 생략합니다.')
+            st.subheader('🔮 AI 7일 최고기온의 과거 대비 이상고온·이상저온 가능성')
+            st.caption('AI 최고기온 예측을 과거 같은 시기의 기온 분포와 비교한 참고 분석입니다. 별도의 이상기후 예측 AI는 아닙니다.')
+            try:
+                risk_week=predict_seven_days(result)
+                future_baseline=historical_baseline(data,pd.to_datetime(risk_week['날짜']))
+                if not future_baseline.empty:
+                    future_baseline['AI 최고기온 예측']=pd.to_numeric(risk_week['AI 예상 최고기온(°C)'],errors='coerce').to_numpy()
+                    future_baseline['비교 결과']=np.where(future_baseline['AI 최고기온 예측']>future_baseline['상위 90% 기준'],'과거 대비 고온 가능',np.where(future_baseline['AI 최고기온 예측']<future_baseline['하위 10% 기준'],'과거 대비 저온 가능','일반 범위'))
+                    st.dataframe(future_baseline[['날짜','AI 최고기온 예측','과거 중앙값','비교 결과']],hide_index=True,use_container_width=True)
+            except (ValueError, KeyError, TypeError) as exc:
+                st.info(f'AI 이상기온 비교 준비 중: {type(exc).__name__}')
+            st.subheader('AI 모델 검증 성능')
+            st.caption('자동 학습 모델의 MAE는 2024~2025년 자료에 대한 1~11일 직접 예측 통합 검증값입니다. 개별 예측일의 정확도나 미래 성능을 보장하지 않습니다. 기존 모델 모드에서는 아래에 1일 예측 검증값이 표시됩니다.')
+            if not result['metrics'].empty:
+                st.dataframe(result['metrics'],hide_index=True,use_container_width=True)
+            ev=result['evaluation'];selected=result['selected']
+            if not ev.empty:
+                view=ev[ev['model']==selected].copy()
+                st.plotly_chart(px.line(view,x='date',y=['actual','pred'],title=f'{selected} 시간순 검증: 실제값 vs 예측값 (전체 검증기간)'),use_container_width=True)
 
 st.subheader('📅 날짜별 AI 예측과 실제 기온 비교')
 st.caption('매일 저장한 예측을 나중에 발표된 대구 ASOS 143 관측값과 비교합니다. 관측소 기온은 칠성동 개별 지점의 실측값이 아닙니다.')
